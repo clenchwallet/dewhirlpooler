@@ -210,7 +210,7 @@ def test_example_environment_has_only_placeholders_and_defaults() -> None:
     assert "@" not in entries["DEWHIRLPOOLER_FULCRUM_HOST"]
 
 
-def test_workflow_uses_read_only_permissions_and_official_actions() -> None:
+def test_workflow_scopes_release_permissions_after_ci() -> None:
     workflow = read(".github/workflows/ci.yml")
     actions = re.findall(r"^\s*uses:\s*(\S+)", workflow, re.MULTILINE)
 
@@ -228,13 +228,25 @@ def test_workflow_uses_read_only_permissions_and_official_actions() -> None:
     assert "10001:10001" in workflow
     assert "if: always()" in workflow
 
+    release = workflow.split("\n  release:\n", maxsplit=1)[1]
+    assert "startsWith(github.event.head_commit.message, 'Release v')" in (
+        release
+    )
+    assert "needs:\n      - python\n      - container" in release
+    assert "permissions:\n      contents: write" in release
+    assert "RELEASE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}" in (
+        release
+    )
+    assert "python -m build" in release
+    assert "wheel assets missing" in release
+    assert "GH_TOKEN: ${{ github.token }}" in release
+    assert 'gh release create "$tag"' in release
+
     lowered = workflow.lower()
     forbidden = (
         "${{ secrets.",
         "docker push",
         "upload-artifact",
-        "release create",
-        "gh release",
     )
     assert not any(item in lowered for item in forbidden)
 
