@@ -1,0 +1,32 @@
+services:
+  dewhirlpooler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: clenchwallet/dewhirlpooler:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${DEWHIRLPOOLER_BIND_ADDRESS:-127.0.0.1}:${DEWHIRLPOOLER_BIND_PORT:-8000}:8000"
+    environment:
+      DEWHIRLPOOLER_FULCRUM_HOST: "${DEWHIRLPOOLER_FULCRUM_HOST:?Set DEWHIRLPOOLER_FULCRUM_HOST in .env}"
+      DEWHIRLPOOLER_FULCRUM_PORT: "${DEWHIRLPOOLER_FULCRUM_PORT:-50001}"
+      DEWHIRLPOOLER_FULCRUM_TLS: "${DEWHIRLPOOLER_FULCRUM_TLS:-false}"
+      DEWHIRLPOOLER_FULCRUM_TIMEOUT: "${DEWHIRLPOOLER_FULCRUM_TIMEOUT:-10}"
+      DEWHIRLPOOLER_CACHE_PATH: /data/reports.sqlite3
+      DEWHIRLPOOLER_CACHE_TTL_SECONDS: "${DEWHIRLPOOLER_CACHE_TTL_SECONDS:-900}"
+      DEWHIRLPOOLER_CACHE_MAX_ENTRIES: "${DEWHIRLPOOLER_CACHE_MAX_ENTRIES:-256}"
+    volumes:
+      - dewhirlpooler-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 10s
+
+volumes:
+  dewhirlpooler-data:

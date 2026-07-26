@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Read-only Whirlpool exposure analysis from your Bitcoin node."
+    >
+    <title>DeWhirlpooler</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">Read-only analysis from your Bitcoin node</p>
+        <h1>DeWhirlpooler</h1>
+        <p class="purpose">See what a public observer can still connect.</p>
+      </div>
+      <div class="local-badge" aria-label="The analysis uses your configured node">
+        <span aria-hidden="true">●</span>
+        Local node
+      </div>
+    </header>
+
+    <main>
+      <section class="card network-panel" aria-labelledby="network-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Network-wide view</p>
+            <h2 id="network-heading">Pool history</h2>
+          </div>
+          <p>
+            Public Whirlpool activity found by the resumable chain scan.
+          </p>
+        </div>
+        <div
+          id="network-status"
+          class="network-status"
+          aria-live="polite"
+        >
+          Loading indexed pool history…
+        </div>
+        <div id="network-content" hidden>
+          <div
+            id="network-summary"
+            class="network-summary"
+            aria-label="Index and coordinator summary"
+          ></div>
+          <p class="network-boundary">
+            Totals cover indexed blocks only. Whirlpool and coordinator
+            classifications are public-chain heuristics, not ownership proof.
+          </p>
+          <div class="pool-history-layout">
+            <section aria-labelledby="pools-heading">
+              <h3 id="pools-heading">Latest pool liquidity</h3>
+              <div id="pool-list" class="pool-list"></div>
+            </section>
+            <section aria-labelledby="pool-history-heading">
+              <h3 id="pool-history-heading">Recent blocks</h3>
+              <p id="pool-history-status" class="pool-history-status">
+                Choose a pool to see its newest indexed blocks.
+              </p>
+              <div class="pool-table-wrap">
+                <table id="pool-history-table" hidden>
+                  <thead>
+                    <tr>
+                      <th scope="col">Block</th>
+                      <th scope="col">Ending liquidity</th>
+                      <th scope="col">Entered</th>
+                      <th scope="col">Exited</th>
+                      <th scope="col">Tx0s</th>
+                      <th scope="col">Rounds</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pool-history-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="card search-panel" aria-labelledby="search-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Start a trace</p>
+            <h2 id="search-heading">Analyze a transaction</h2>
+          </div>
+          <p>Public links only. No wallet information is requested.</p>
+        </div>
+
+        <form id="trace-form" novalidate>
+          <label for="txid">Transaction ID</label>
+          <div class="search-row">
+            <input
+              id="txid"
+              name="txid"
+              type="text"
+              inputmode="text"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              maxlength="64"
+              placeholder="Paste a 64-character transaction ID"
+              aria-describedby="txid-help"
+              required
+            >
+            <button id="analyze-button" class="primary-button" type="submit">
+              Analyze transaction
+            </button>
+          </div>
+          <p id="txid-help" class="field-help">
+            Start with a Tx0 or Whirlpool round.
+          </p>
+          <button
+            id="example-button"
+            class="text-button"
+            type="button"
+            data-example-txid="18c999772ed82bf7753bdce9021cfa68b505de36344ce81f77d0c436b7135892"
+          >
+            Use the public Ashigaru example
+          </button>
+
+          <details class="limits-panel">
+            <summary>Trace limits</summary>
+            <p>
+              Safety limits keep one analysis from following too much history.
+            </p>
+            <div class="limit-grid">
+              <label>
+                Spend levels
+                <input
+                  id="max-depth"
+                  name="max_depth"
+                  type="number"
+                  min="1"
+                  max="12"
+                  value="8"
+                >
+                <span>Eight steps can cover a four-hop Ricochet.</span>
+              </label>
+              <label>
+                Transactions
+                <input
+                  id="max-transactions"
+                  name="max_transactions"
+                  type="number"
+                  min="1"
+                  max="500"
+                  value="100"
+                >
+                <span>Maximum transactions examined.</span>
+              </label>
+              <label>
+                Outputs
+                <input
+                  id="max-outputs"
+                  name="max_outputs"
+                  type="number"
+                  min="1"
+                  max="2000"
+                  value="250"
+                >
+                <span>Maximum outputs shown.</span>
+              </label>
+              <label>
+                History checks
+                <input
+                  id="max-history-lookups"
+                  name="max_history_lookups"
+                  type="number"
+                  min="1"
+                  max="2000"
+                  value="250"
+                >
+                <span>Maximum output histories checked.</span>
+              </label>
+            </div>
+          </details>
+        </form>
+
+        <div id="request-status" class="status-line" aria-live="polite"></div>
+        <div
+          id="error-alert"
+          class="alert error-alert"
+          role="alert"
+          aria-live="assertive"
+          hidden
+        ></div>
+      </section>
+
+      <section id="results" class="results" aria-label="Trace results">
+        <div id="partial-alert" class="alert partial-alert" hidden>
+          <strong>Partial trace</strong>
+          <span>
+            This is a partial trace. A safety limit stopped deeper analysis.
+          </span>
+        </div>
+
+        <section class="card summary-card" aria-labelledby="summary-heading">
+          <div class="section-heading compact">
+            <div>
+              <p class="section-kicker">At a glance</p>
+              <h2 id="summary-heading">Exposure summary</h2>
+            </div>
+          </div>
+          <div id="summary-grid" class="summary-grid">
+            <div><span>Transactions examined</span><strong>—</strong></div>
+            <div><span>Whirlpool rounds</span><strong>—</strong></div>
+            <div><span>Later Tx0s</span><strong>—</strong></div>
+            <div><span>Postmix consolidations</span><strong>—</strong></div>
+            <div>
+              <span>3+ coin payment consolidations</span><strong>—</strong>
+            </div>
+            <div><span>Cross-role address reuse</span><strong>—</strong></div>
+            <div><span>Whirlpool CPFP candidates</span><strong>—</strong></div>
+            <div><span>Stonewall candidates</span><strong>—</strong></div>
+            <div><span>Ricochet candidates</span><strong>—</strong></div>
+            <div><span>Possible payments</span><strong>—</strong></div>
+            <div><span>Still unspent</span><strong>—</strong></div>
+          </div>
+          <div id="warnings" class="warnings" aria-label="Trace warnings"></div>
+        </section>
+
+        <div class="results-grid">
+          <aside class="findings-column">
+            <section class="card detail-card" aria-labelledby="detail-heading">
+              <div class="section-heading compact">
+                <div>
+                  <p class="section-kicker">Selected item</p>
+                  <h2 id="detail-heading">Details</h2>
+                </div>
+              </div>
+              <div id="detail-panel" class="detail-panel">
+                <p class="empty-state">
+                  Select a transaction or output in the graph.
+                </p>
+              </div>
+            </section>
+
+            <section class="card findings-card" aria-labelledby="findings-heading">
+              <div class="section-heading compact">
+                <div>
+                  <p class="section-kicker">Important links</p>
+                  <h2 id="findings-heading">What stands out</h2>
+                </div>
+              </div>
+              <div id="findings-list" class="findings-list">
+                <p class="empty-state">
+                  Analyze a transaction to see important findings.
+                </p>
+              </div>
+            </section>
+          </aside>
+
+          <section class="card graph-card" aria-labelledby="graph-heading">
+            <div class="graph-header">
+              <div class="section-heading compact">
+                <div>
+                  <p class="section-kicker">Observed and possible links</p>
+                  <h2 id="graph-heading">Transaction trail</h2>
+                </div>
+              </div>
+              <div class="graph-controls" aria-label="Graph controls">
+                <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+                <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+                <button id="fit-graph" type="button">Fit</button>
+                <button id="reset-graph" type="button">Reset</button>
+              </div>
+            </div>
+            <div
+              id="transaction-graph"
+              class="transaction-graph"
+              role="img"
+              aria-label="Interactive transaction trail"
+            ></div>
+            <div id="graph-empty" class="graph-empty">
+              The transaction trail will appear here.
+            </div>
+            <div class="legend" aria-label="Graph legend">
+              <ul>
+                <li><span class="legend-shape transaction"></span>Transaction</li>
+                <li><span class="legend-shape doxxic"></span>Doxxic change</li>
+                <li><span class="legend-shape premix"></span>Premix</li>
+                <li><span class="legend-shape postmix"></span>Coinjoin / postmix</li>
+                <li><span class="legend-shape fee"></span>Coordinator fee</li>
+                <li><span class="legend-shape payment"></span>Possible payment</li>
+              </ul>
+              <p id="interpretation">
+                Solid lines are observed spends. Dashed lines cross a coinjoin
+                and represent possibilities, not proof that one participant
+                controlled a specific output.
+              </p>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/vendor/cytoscape.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
