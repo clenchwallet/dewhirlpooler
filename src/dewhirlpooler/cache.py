@@ -12,6 +12,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+from .pathutils import expand_user_path
 from .trace import TraceLimits
 
 TRACE_CACHE_VERSION = 6
@@ -61,7 +62,7 @@ class CacheSettings:
             path = (
                 None
                 if not raw_path.strip()
-                else Path(raw_path.strip()).expanduser()
+                else expand_user_path(raw_path.strip())
             )
         except (OSError, RuntimeError, TypeError):
             raise ValueError(
