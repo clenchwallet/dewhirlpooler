@@ -17,6 +17,7 @@ from .bitcoin import (
 from .postmix import (
     RicochetEntry,
     RicochetHop,
+    detect_bip47_notification,
     detect_payjoin_fingerprints,
     detect_ricochet_entry,
     detect_ricochet_hop,
@@ -63,6 +64,7 @@ class TraceFindingKind(StrEnum):
     STONEWALL = "stonewall"
     RICOCHET = "ricochet"
     WHIRLPOOL_CPFP = "whirlpool_cpfp"
+    BIP47_NOTIFICATION = "bip47_notification"
     ADDRESS_REUSE = "address_reuse"
     POSTMIX_PAYJOIN_FINGERPRINT = "postmix_payjoin_fingerprint"
     POSSIBLE_PAYMENT = "possible_payment"
@@ -142,6 +144,10 @@ class TraceFinding:
     payjoin_unnecessary_input_heuristic: str | None = None
     payjoin_fingerprint_signals: tuple[str, ...] = ()
     payjoin_input_clusters: tuple[tuple[int, ...], ...] = ()
+    bip47_payload_version: int | None = None
+    bip47_designated_input_index: int | None = None
+    bip47_designated_input_outpoint: OutPoint | None = None
+    bip47_designated_pubkey: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +166,7 @@ class TraceSummary:
     address_reuse_findings: int = 0
     whirlpool_cpfp_findings: int = 0
     postmix_payjoin_fingerprint_candidates: int = 0
+    bip47_notification_candidates: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +296,27 @@ class TraceReport:
                         list(cluster)
                         for cluster in finding.payjoin_input_clusters
                     ],
+                    "bip47_payload_version": (
+                        finding.bip47_payload_version
+                    ),
+                    "bip47_designated_input_index": (
+                        finding.bip47_designated_input_index
+                    ),
+                    "bip47_designated_input_outpoint": (
+                        {
+                            "txid": (
+                                finding.bip47_designated_input_outpoint.txid
+                            ),
+                            "index": (
+                                finding.bip47_designated_input_outpoint.index
+                            ),
+                        }
+                        if finding.bip47_designated_input_outpoint is not None
+                        else None
+                    ),
+                    "bip47_designated_pubkey": (
+                        finding.bip47_designated_pubkey
+                    ),
                 }
                 for finding in self.findings
             ],
@@ -313,6 +341,9 @@ class TraceReport:
                 ),
                 "postmix_payjoin_fingerprint_candidates": (
                     self.summary.postmix_payjoin_fingerprint_candidates
+                ),
+                "bip47_notification_candidates": (
+                    self.summary.bip47_notification_candidates
                 ),
                 "possible_payments": self.summary.possible_payments,
                 "unspent_output_count": self.summary.unspent_output_count,
@@ -594,6 +625,7 @@ class ExposureTracer:
                 explanation="The transaction creates this output.",
             )
         self._track_input_address_roles(transaction, detection)
+        self._add_bip47_notification_finding(transaction)
         return True
 
     def _enqueue_roles(
@@ -1201,6 +1233,10 @@ class ExposureTracer:
                 is TraceFindingKind.POSTMIX_PAYJOIN_FINGERPRINT
                 for finding in findings
             ),
+            bip47_notification_candidates=sum(
+                finding.kind is TraceFindingKind.BIP47_NOTIFICATION
+                for finding in findings
+            ),
             possible_payments=sum(
                 finding.kind is TraceFindingKind.POSSIBLE_PAYMENT
                 for finding in findings
@@ -1231,6 +1267,48 @@ class ExposureTracer:
             warnings=tuple(sorted(self._warnings)),
             truncated=self._truncated,
             transactions=transactions,
+        )
+
+    def _add_bip47_notification_finding(
+        self,
+        transaction: Transaction,
+    ) -> None:
+        detection = detect_bip47_notification(
+            transaction,
+            self._prevouts[transaction.txid],
+        )
+        if detection is None:
+            return
+        self._mark_output_role(
+            detection.notification_outpoint,
+            TraceFindingKind.BIP47_NOTIFICATION.value,
+            detection.confidence,
+        )
+        self._add_finding(
+            TraceFinding(
+                kind=TraceFindingKind.BIP47_NOTIFICATION,
+                confidence=detection.confidence,
+                txid=transaction.txid,
+                outpoints=(detection.notification_outpoint,),
+                explanation=(
+                    "This transaction has one canonical 80-byte BIP47 "
+                    "OP_RETURN payload and exposes a valid designated "
+                    "secp256k1 public key. It is a notification candidate, "
+                    "not proof: identifying the recipient and validating "
+                    "the blinded payment code require recipient-specific "
+                    "notification-key data."
+                ),
+                bip47_payload_version=detection.payload_version,
+                bip47_designated_input_index=(
+                    detection.designated_input_index
+                ),
+                bip47_designated_input_outpoint=(
+                    detection.designated_input_outpoint
+                ),
+                bip47_designated_pubkey=(
+                    detection.designated_pubkey.hex()
+                ),
+            )
         )
 
     def _add_address_reuse_findings(self) -> None:

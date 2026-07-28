@@ -25,6 +25,9 @@ from dewhirlpooler.trace import (
 from dewhirlpooler.whirlpool import Confidence
 
 FIXTURES = Path(__file__).parent / "fixtures"
+SECP256K1_GENERATOR = bytes.fromhex(
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+)
 
 
 def _fixture(name: str) -> Transaction:
@@ -83,6 +86,76 @@ def test_unknown_root_returns_root_only_report() -> None:
     assert report.findings == ()
     assert report.warnings
     assert report.truncated is False
+
+
+def test_unknown_root_reports_bip47_notification_candidate() -> None:
+    input_outpoint = OutPoint("a" * 64, 0)
+    payload = (
+        b"\x01\x00\x02"
+        + b"\x11" * 32
+        + b"\x22" * 32
+        + b"\x00" * 13
+    )
+    transaction = Transaction(
+        version=2,
+        inputs=(
+            TxInput(
+                previous_output=input_outpoint,
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+                witness=(b"signature", SECP256K1_GENERATOR),
+            ),
+        ),
+        outputs=(
+            TxOutput(
+                0,
+                0,
+                b"\x6a\x4c\x50" + payload,
+                ScriptType.OP_RETURN,
+            ),
+            TxOutput(
+                1,
+                9_000,
+                b"\x00\x14" + b"\x33" * 20,
+                ScriptType.P2WPKH,
+            ),
+        ),
+        lock_time=0,
+        has_witness=True,
+        txid="b" * 64,
+        wtxid="c" * 64,
+        size=200,
+        weight=600,
+        vsize=150,
+    )
+    prevout = TxOutput(
+        0,
+        10_000,
+        b"\x00\x14" + b"\x44" * 20,
+        ScriptType.P2WPKH,
+    )
+    resolver = FakeResolver(
+        {transaction.txid: transaction},
+        {transaction.txid: {input_outpoint: prevout}},
+        {},
+    )
+
+    report = ExposureTracer(resolver).trace(transaction.txid)  # type: ignore[arg-type]
+
+    assert report.summary.bip47_notification_candidates == 1
+    assert len(report.findings) == 1
+    finding = report.findings[0]
+    assert finding.kind is TraceFindingKind.BIP47_NOTIFICATION
+    assert finding.outpoints == (OutPoint(transaction.txid, 0),)
+    assert finding.bip47_payload_version == 1
+    assert finding.bip47_designated_input_index == 0
+    assert finding.bip47_designated_input_outpoint == input_outpoint
+    assert finding.bip47_designated_pubkey == SECP256K1_GENERATOR.hex()
+    assert "not proof" in finding.explanation
+    assert report.to_dict()["summary"]["bip47_notification_candidates"] == 1
+    assert report.to_dict()["findings"][0][
+        "bip47_designated_input_outpoint"
+    ] == {"txid": input_outpoint.txid, "index": input_outpoint.index}
 
 
 def test_unresolved_round_ratios_are_unavailable_not_zero() -> None:

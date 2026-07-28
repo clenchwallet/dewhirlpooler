@@ -17,6 +17,7 @@ from dewhirlpooler.bitcoin import (
 )
 from dewhirlpooler.postmix import (
     RICOCHET_SERVICE_FEE_SATS,
+    detect_bip47_notification,
     detect_payjoin_fingerprints,
     detect_ricochet_entry,
     detect_ricochet_hop,
@@ -26,10 +27,147 @@ from dewhirlpooler.postmix import (
 from dewhirlpooler.whirlpool import Confidence
 
 FIXTURES = Path(__file__).parent / "fixtures"
+SECP256K1_GENERATOR = bytes.fromhex(
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+)
 
 
 def _fixture(name: str) -> Transaction:
     return parse_transaction_hex((FIXTURES / name).read_text().strip())
+
+
+@pytest.mark.parametrize(
+    ("version", "features", "reserved"),
+    (
+        (1, 0, b"\x00" * 13),
+        (2, 1, b"\x01\x02" + b"\x00" * 11),
+    ),
+)
+def test_detects_canonical_bip47_notification_candidate(
+    version: int,
+    features: int,
+    reserved: bytes,
+) -> None:
+    input_outpoint = OutPoint("a" * 64, 1)
+    payload = (
+        bytes((version, features, 2))
+        + bytes(range(32))
+        + bytes(range(32, 64))
+        + reserved
+    )
+    transaction = Transaction(
+        version=2,
+        inputs=(
+            TxInput(
+                previous_output=input_outpoint,
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+                witness=(b"signature", SECP256K1_GENERATOR),
+            ),
+        ),
+        outputs=(
+            TxOutput(
+                0,
+                546,
+                b"\x76\xa9\x14" + b"\x11" * 20 + b"\x88\xac",
+                ScriptType.P2PKH,
+            ),
+            TxOutput(
+                1,
+                0,
+                b"\x6a\x4c\x50" + payload,
+                ScriptType.OP_RETURN,
+            ),
+        ),
+        lock_time=0,
+        has_witness=True,
+        txid="b" * 64,
+        wtxid="c" * 64,
+        size=200,
+        weight=600,
+        vsize=150,
+    )
+    prevouts = {
+        input_outpoint: TxOutput(
+            0,
+            10_000,
+            b"\x00\x14" + b"\x22" * 20,
+            ScriptType.P2WPKH,
+        )
+    }
+
+    detection = detect_bip47_notification(transaction, prevouts)
+
+    assert detection is not None
+    assert detection.confidence is Confidence.MEDIUM
+    assert detection.notification_outpoint == OutPoint(transaction.txid, 1)
+    assert detection.payload_version == version
+    assert detection.designated_input_index == 0
+    assert detection.designated_input_outpoint == input_outpoint
+    assert detection.designated_pubkey == SECP256K1_GENERATOR
+
+
+@pytest.mark.parametrize(
+    ("script", "pubkey"),
+    (
+        (
+            b"\x6a\x50"
+            + b"\x01\x00\x02"
+            + b"\x00" * 77,
+            SECP256K1_GENERATOR,
+        ),
+        (
+            b"\x6a\x4c\x50"
+            + b"\x01\x00\x02"
+            + b"\x00" * 64
+            + b"\x01"
+            + b"\x00" * 12,
+            SECP256K1_GENERATOR,
+        ),
+        (
+            b"\x6a\x4c\x50"
+            + b"\x01\x00\x02"
+            + b"\x00" * 77,
+            b"\x02" + b"\xff" * 32,
+        ),
+    ),
+)
+def test_bip47_rejects_noncanonical_or_unusable_public_evidence(
+    script: bytes,
+    pubkey: bytes,
+) -> None:
+    input_outpoint = OutPoint("d" * 64, 0)
+    transaction = Transaction(
+        version=2,
+        inputs=(
+            TxInput(
+                previous_output=input_outpoint,
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+                witness=(b"signature", pubkey),
+            ),
+        ),
+        outputs=(
+            TxOutput(0, 0, script, ScriptType.OP_RETURN),
+        ),
+        lock_time=0,
+        has_witness=True,
+        txid="e" * 64,
+        wtxid="f" * 64,
+        size=180,
+        weight=500,
+        vsize=125,
+    )
+    prevouts = {
+        input_outpoint: TxOutput(
+            0,
+            10_000,
+            b"\x00\x14" + b"\x22" * 20,
+            ScriptType.P2WPKH,
+        )
+    }
+
+    assert detect_bip47_notification(transaction, prevouts) is None
 
 
 def test_detects_public_mainnet_stonewall_shape() -> None:

@@ -566,6 +566,7 @@ def test_trace_prints_text_summary_and_key_findings(
         "Stonewall candidates: 1\n"
         "Ricochet candidates: 1\n"
         "Possible Payjoin / Cahoots fingerprint leak: 1\n"
+        "BIP47 notification candidates: 1\n"
         "Possible payments: 2\n"
         "Unspent tracked funds: 3500000 sats across 3 output(s)\n"
         "Trace truncated: no\n"
@@ -589,6 +590,10 @@ def test_trace_prints_text_summary_and_key_findings(
         "Observable input groups: 2 (inputs 1; inputs 2)\n"
         "This is consistent with Payjoin/Cahoots, not proof; "
         "observable groups are not proven owners.\n"
+        f"Possible BIP47 notification: {'0' * 64} (medium confidence)\n"
+        "Payload version / designated input: 1 / 1\n"
+        "Recipient and payment-code validity require "
+        "recipient-specific notification-key data.\n"
         "Address reused across roles: bc1qreused "
         "(coordinator fee, Whirlpool output)\n"
         f"Possible Whirlpool CPFP: {'8' * 64} -> {'9' * 64} "
@@ -865,6 +870,20 @@ def _trace_report(*, truncated: bool = False) -> TraceReport:
         payjoin_fingerprint_signals=("ecdsa_r_length",),
         payjoin_input_clusters=((0,), (1,)),
     )
+    bip47 = TraceFinding(
+        kind=TraceFindingKind.BIP47_NOTIFICATION,
+        confidence=Confidence.MEDIUM,
+        txid="0" * 64,
+        outpoints=(OutPoint("0" * 64, 1),),
+        explanation="A canonical BIP47 notification shape was observed.",
+        bip47_payload_version=1,
+        bip47_designated_input_index=0,
+        bip47_designated_input_outpoint=OutPoint("f" * 64, 2),
+        bip47_designated_pubkey=(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f"
+            "2815b16f81798"
+        ),
+    )
     address_reuse = TraceFinding(
         kind=TraceFindingKind.ADDRESS_REUSE,
         confidence=Confidence.MEDIUM,
@@ -907,6 +926,7 @@ def _trace_report(*, truncated: bool = False) -> TraceReport:
             stonewall,
             ricochet,
             payjoin,
+            bip47,
             address_reuse,
             cpfp,
         ),
@@ -922,6 +942,7 @@ def _trace_report(*, truncated: bool = False) -> TraceReport:
             address_reuse_findings=1,
             whirlpool_cpfp_findings=1,
             postmix_payjoin_fingerprint_candidates=1,
+            bip47_notification_candidates=1,
             possible_payments=2,
             unspent_output_count=3,
             unspent_sats=3_500_000,
