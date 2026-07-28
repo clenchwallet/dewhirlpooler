@@ -153,6 +153,13 @@ reports its coverage limits.
 All browser assets are packaged locally; the application UI makes no CDN,
 analytics, telemetry, font, or other third-party browser requests.
 
+Exact-address reuse is compared across observed Tx0 inputs, coordinator fees,
+premix/feeder outputs, doxxic change, Whirlpool inputs and equal outputs, and
+Stonewall equal outputs. A finding requires the same native-SegWit address to
+occur at two or more distinct outpoints and in at least two classified roles;
+seeing the same UTXO later consumed as an input does not by itself count as
+reuse.
+
 ## Public example
 
 [![DeWhirlpooler public trace showing the exposure summary, root transaction accounting, and interactive transaction graph](docs/assets/dewhirlpooler-trace.png)](docs/public-example.md)

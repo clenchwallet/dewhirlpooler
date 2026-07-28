@@ -706,6 +706,9 @@ def _display_reused_role(role: str) -> str:
     return {
         "coordinator_fee": "coordinator fee",
         "tx0_premix": "Tx0 premix",
+        "tx0_input": "Tx0 input",
+        "tx0_change": "Tx0 change",
+        "whirlpool_input": "Whirlpool input",
         "whirlpool_coinjoin_output": "Whirlpool output",
         "stonewall_equal_output": "Stonewall equal output",
     }.get(role, role.replace("_", " "))

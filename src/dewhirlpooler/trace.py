@@ -32,6 +32,16 @@ from .whirlpool import (
     detect_whirlpool,
 )
 
+_ADDRESS_ROLE_LABELS = {
+    OutputRole.COORDINATOR_FEE.value: "coordinator_fee",
+    OutputRole.PREMIX.value: "tx0_premix",
+    OutputRole.DOXXIC_CHANGE.value: "tx0_change",
+    OutputRole.COINJOIN.value: "whirlpool_coinjoin_output",
+    "stonewall_equal_output": "stonewall_equal_output",
+    "tx0_input": "tx0_input",
+    "whirlpool_input": "whirlpool_input",
+}
+
 
 class TraceNodeKind(StrEnum):
     TRANSACTION = "transaction"
@@ -346,6 +356,11 @@ class ExposureTracer:
         self._spend_cache: dict[OutPoint, Transaction | None] = {}
         self._looked_up_outpoints: set[OutPoint] = set()
         self._visited_states: set[tuple[OutPoint, _Ancestry]] = set()
+        self._address_roles: dict[
+            bytes,
+            set[tuple[OutPoint, str]],
+        ] = {}
+        self._address_role_outpoints: set[OutPoint] = set()
         self._truncated = False
 
         root = self._resolver.transaction(root_txid)
@@ -531,9 +546,9 @@ class ExposureTracer:
             for classification in detection.outputs
         }
         for output in transaction.outputs:
-            output_id = _output_node_id(
-                OutPoint(transaction.txid, output.index)
-            )
+            outpoint = OutPoint(transaction.txid, output.index)
+            output_id = _output_node_id(outpoint)
+            classification = roles.get(output.index)
             if output_id not in self._nodes:
                 output_count = sum(
                     node.kind is TraceNodeKind.OUTPUT
@@ -544,7 +559,6 @@ class ExposureTracer:
                         "Maximum output count reached; the report is partial."
                     )
                     break
-                classification = roles.get(output.index)
                 self._nodes[output_id] = TraceNode(
                     id=output_id,
                     kind=TraceNodeKind.OUTPUT,
@@ -566,6 +580,12 @@ class ExposureTracer:
                         else Confidence.LOW
                     ),
                 )
+            if classification is not None:
+                self._track_address_role(
+                    outpoint,
+                    output,
+                    classification.role.value,
+                )
             self._add_edge(
                 source=transaction_id,
                 target=output_id,
@@ -573,6 +593,7 @@ class ExposureTracer:
                 confidence=Confidence.HIGH,
                 explanation="The transaction creates this output.",
             )
+        self._track_input_address_roles(transaction, detection)
         return True
 
     def _enqueue_roles(
@@ -1087,6 +1108,16 @@ class ExposureTracer:
                 role=role,
                 confidence=confidence,
             )
+            transaction = self._transactions.get(outpoint.txid)
+            if (
+                transaction is not None
+                and 0 <= outpoint.index < len(transaction.outputs)
+            ):
+                self._track_address_role(
+                    outpoint,
+                    transaction.outputs[outpoint.index],
+                    role,
+                )
 
     def _truncate(self, warning: str) -> None:
         self._truncated = True
@@ -1203,66 +1234,82 @@ class ExposureTracer:
         )
 
     def _add_address_reuse_findings(self) -> None:
-        role_labels = {
-            OutputRole.COORDINATOR_FEE.value: "coordinator_fee",
-            OutputRole.PREMIX.value: "tx0_premix",
-            OutputRole.COINJOIN.value: "whirlpool_coinjoin_output",
-            "stonewall_equal_output": "stonewall_equal_output",
-        }
-        grouped: dict[bytes, list[tuple[OutPoint, str]]] = {}
-        for node in self._nodes.values():
-            if (
-                node.kind is not TraceNodeKind.OUTPUT
-                or node.output_index is None
-                or node.role not in role_labels
-            ):
-                continue
-            transaction = self._transactions.get(node.txid)
-            if transaction is None:
-                continue
-            output = transaction.outputs[node.output_index]
-            if (
-                output.value_sats <= 0
-                or output.script_type is not ScriptType.P2WPKH
-            ):
-                continue
-            grouped.setdefault(output.script_pubkey, []).append(
-                (
-                    OutPoint(node.txid, node.output_index),
-                    role_labels[node.role],
-                )
-            )
-
         for script_pubkey, matches in sorted(
-            grouped.items(),
+            self._address_roles.items(),
             key=lambda item: item[0],
         ):
             roles = tuple(sorted({role for _, role in matches}))
-            if len(roles) < 2:
-                continue
             outpoints = tuple(
                 sorted(
                     {outpoint for outpoint, _ in matches},
                     key=lambda item: (item.txid, item.index),
                 )
             )
+            if len(roles) < 2 or len(outpoints) < 2:
+                continue
+            finding_txid = next(
+                (
+                    outpoint.txid
+                    for outpoint in outpoints
+                    if outpoint.txid in self._transactions
+                ),
+                outpoints[0].txid,
+            )
             self._add_finding(
                 TraceFinding(
                     kind=TraceFindingKind.ADDRESS_REUSE,
                     confidence=Confidence.MEDIUM,
-                    txid=outpoints[0].txid,
+                    txid=finding_txid,
                     outpoints=outpoints,
                     explanation=(
-                        "The exact same native-SegWit address appears across "
-                        "multiple classified Whirlpool roles in this bounded "
-                        "trace. Address reuse is observed, while the role "
-                        "labels are heuristic and common ownership is not "
-                        "proven."
+                        "The exact same native-SegWit address appears "
+                        "across multiple classified Whirlpool roles in this "
+                        "bounded trace. Address reuse is observed, while the "
+                        "role labels are heuristic and common ownership is "
+                        "not proven."
                     ),
                     reused_address=encode_p2wpkh_address(script_pubkey),
                     reused_roles=roles,
                 )
             )
+
+    def _track_input_address_roles(
+        self,
+        transaction: Transaction,
+        detection: WhirlpoolDetection,
+    ) -> None:
+        if detection.kind is TransactionKind.TX0:
+            role = "tx0_input"
+        elif detection.kind is TransactionKind.WHIRLPOOL_ROUND:
+            role = "whirlpool_input"
+        else:
+            return
+        prevouts = self._prevouts.get(transaction.txid, {})
+        for transaction_input in transaction.inputs:
+            outpoint = transaction_input.previous_output
+            if outpoint in self._address_role_outpoints:
+                continue
+            output = prevouts.get(outpoint)
+            if output is not None:
+                self._track_address_role(outpoint, output, role)
+
+    def _track_address_role(
+        self,
+        outpoint: OutPoint,
+        output: TxOutput,
+        role: str,
+    ) -> None:
+        label = _ADDRESS_ROLE_LABELS.get(role)
+        if (
+            label is None
+            or output.value_sats <= 0
+            or output.script_type is not ScriptType.P2WPKH
+        ):
+            return
+        self._address_roles.setdefault(output.script_pubkey, set()).add(
+            (outpoint, label)
+        )
+        self._address_role_outpoints.add(outpoint)
 
     def _add_whirlpool_cpfp_finding(
         self,

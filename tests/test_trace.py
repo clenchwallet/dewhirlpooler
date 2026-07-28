@@ -328,6 +328,93 @@ def test_flags_address_reuse_across_coinjoin_and_stonewall_roles() -> None:
     assert report.summary.address_reuse_findings == 1
 
 
+def test_flags_reuse_between_tx0_input_and_change() -> None:
+    shared_script = b"\x00\x14" + b"\x97" * 20
+    root = _replace_outputs(
+        _fixture("ashigaru-tx0-0.025.hex"),
+        {2: shared_script},
+    )
+    input_outpoint = root.inputs[0].previous_output
+    input_output = TxOutput(
+        index=input_outpoint.index,
+        value_sats=sum(output.value_sats for output in root.outputs) + 15_000,
+        script_pubkey=shared_script,
+        script_type=ScriptType.P2WPKH,
+    )
+    resolver = FakeResolver(
+        {root.txid: root},
+        {root.txid: {input_outpoint: input_output}},
+        {},
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    finding = next(
+        finding
+        for finding in report.findings
+        if finding.kind is TraceFindingKind.ADDRESS_REUSE
+    )
+    assert finding.reused_address == encode_p2wpkh_address(shared_script)
+    assert finding.reused_roles == ("tx0_change", "tx0_input")
+    assert finding.outpoints == tuple(
+        sorted(
+            (input_outpoint, OutPoint(root.txid, 2)),
+            key=lambda item: (item.txid, item.index),
+        )
+    )
+
+
+def test_flags_reuse_between_whirlpool_input_and_output() -> None:
+    shared_script = b"\x00\x14" + b"\x96" * 20
+    root = _replace_outputs(
+        _fixture("ashigaru-round-0.025.hex"),
+        {0: shared_script},
+    )
+    input_values = [2_500_605] * 2 + [2_500_000] * 3
+    prevouts = {
+        transaction_input.previous_output: TxOutput(
+            index=transaction_input.previous_output.index,
+            value_sats=value,
+            script_pubkey=(
+                shared_script
+                if position == 0
+                else b"\x00\x14" + bytes((position + 1,)) * 20
+            ),
+            script_type=ScriptType.P2WPKH,
+        )
+        for position, (transaction_input, value) in enumerate(
+            zip(root.inputs, input_values, strict=True)
+        )
+    }
+    resolver = FakeResolver(
+        {root.txid: root},
+        {root.txid: prevouts},
+        {},
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    finding = next(
+        finding
+        for finding in report.findings
+        if finding.kind is TraceFindingKind.ADDRESS_REUSE
+    )
+    assert finding.reused_address == encode_p2wpkh_address(shared_script)
+    assert finding.reused_roles == (
+        "whirlpool_coinjoin_output",
+        "whirlpool_input",
+    )
+    assert finding.outpoints == tuple(
+        sorted(
+            (
+                root.inputs[0].previous_output,
+                OutPoint(root.txid, 0),
+            ),
+            key=lambda item: (item.txid, item.index),
+        )
+    )
+
+
 def test_same_role_address_reuse_is_not_flagged() -> None:
     template = _fixture("ashigaru-tx0-0.025.hex")
     shared_script = b"\x00\x14" + b"\x99" * 20
@@ -345,6 +432,18 @@ def test_same_role_address_reuse_is_not_flagged() -> None:
     )
 
     report = ExposureTracer(resolver).trace(transaction.txid)  # type: ignore[arg-type]
+
+    assert report.summary.address_reuse_findings == 0
+    assert all(
+        finding.kind is not TraceFindingKind.ADDRESS_REUSE
+        for finding in report.findings
+    )
+
+
+def test_same_outpoint_becoming_whirlpool_input_is_not_reuse() -> None:
+    resolver, root, _, _, _ = _chain()
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
 
     assert report.summary.address_reuse_findings == 0
     assert all(
