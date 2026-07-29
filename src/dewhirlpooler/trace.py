@@ -132,6 +132,7 @@ class TraceFinding:
     payjoin_unnecessary_input_heuristic: str | None = None
     payjoin_fingerprint_signals: tuple[str, ...] = ()
     payjoin_input_clusters: tuple[tuple[int, ...], ...] = ()
+    source_txids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +280,7 @@ class TraceReport:
                         list(cluster)
                         for cluster in finding.payjoin_input_clusters
                     ],
+                    "source_txids": list(finding.source_txids),
                 }
                 for finding in self.findings
             ],
@@ -343,6 +345,7 @@ class ExposureTracer:
         self._prevouts: dict[str, dict[OutPoint, TxOutput]] = {}
         self._transactions: dict[str, Transaction] = {}
         self._ancestry: dict[OutPoint, set[_Ancestry]] = {}
+        self._premix_origins: dict[OutPoint, set[OutPoint]] = {}
         self._spend_cache: dict[OutPoint, Transaction | None] = {}
         self._looked_up_outpoints: set[OutPoint] = set()
         self._visited_states: set[tuple[OutPoint, _Ancestry]] = set()
@@ -596,6 +599,10 @@ class ExposureTracer:
             if confidence_cap is not None:
                 confidence = _lower_confidence(confidence, confidence_cap)
             self._ancestry.setdefault(outpoint, set()).add(ancestry)
+            if ancestry is _Ancestry.PREMIX:
+                self._premix_origins.setdefault(outpoint, set()).add(
+                    outpoint
+                )
             self._mark_output_role(
                 outpoint,
                 classification.role.value,
@@ -654,6 +661,10 @@ class ExposureTracer:
             )
         )
         next_confidence = _coinjoin_confidence(source_item.confidence)
+        source_origins = self._premix_origins.get(
+            source_item.outpoint,
+            set(),
+        )
         for classification in detection.outputs:
             if classification.role is not OutputRole.COINJOIN:
                 continue
@@ -669,6 +680,10 @@ class ExposureTracer:
                 "the coinjoin removes a deterministic link.",
             )
             self._ancestry.setdefault(outpoint, set()).add(_Ancestry.POSTMIX)
+            if source_origins:
+                self._premix_origins.setdefault(outpoint, set()).update(
+                    source_origins
+                )
             self._mark_output_role(
                 outpoint,
                 OutputRole.COINJOIN.value,
@@ -726,27 +741,32 @@ class ExposureTracer:
                 and output.script_type is not ScriptType.OP_RETURN
             )
         )
-        if (
-            len(tracked_postmix_inputs) >= 3
-            and len(spendable_outputs) == 1
-        ):
-            self._add_finding(
-                TraceFinding(
-                    kind=(
-                        TraceFindingKind.POSTMIX_PAYMENT_CONSOLIDATION
-                    ),
-                    confidence=Confidence.MEDIUM,
-                    txid=transaction.txid,
-                    outpoints=tracked_postmix_inputs,
-                    explanation=(
-                        "Three or more possible postmix descendants are "
-                        "directly co-spent into one spendable output, a shape "
-                        "consistent with a Tx0 to Whirlpool to payment "
-                        "consolidation. Coinjoin ancestry and common control "
-                        "remain heuristic."
-                    ),
+        if len(spendable_outputs) == 1:
+            for source_txid, linked_inputs in (
+                _tx0_linked_postmix_inputs(
+                    tracked_postmix_inputs,
+                    self._premix_origins,
                 )
-            )
+            ):
+                self._add_finding(
+                    TraceFinding(
+                        kind=(
+                            TraceFindingKind.POSTMIX_PAYMENT_CONSOLIDATION
+                        ),
+                        confidence=Confidence.MEDIUM,
+                        txid=transaction.txid,
+                        outpoints=linked_inputs,
+                        explanation=(
+                            "Three or more possible postmix descendants are "
+                            "directly co-spent into one spendable output and "
+                            "admit a one-to-one match to distinct premix "
+                            "outputs from the same Tx0. The co-spend is "
+                            "observed; Coinjoin lineage and common control "
+                            "remain heuristic."
+                        ),
+                        source_txids=(source_txid,),
+                    )
+                )
 
         protected_output_indices: set[int] = set()
         ricochet_output_indices: set[int] = set()
@@ -1064,6 +1084,7 @@ class ExposureTracer:
                 (outpoint.txid, outpoint.index)
                 for outpoint in finding.outpoints
             ),
+            finding.source_txids,
         )
         self._findings.setdefault(key, finding)
 
@@ -1106,6 +1127,7 @@ class ExposureTracer:
                         (outpoint.txid, outpoint.index)
                         for outpoint in finding.outpoints
                     ),
+                    finding.source_txids,
                 ),
             )
         )
@@ -1329,6 +1351,65 @@ class ExposureTracer:
                 cpfp_package_fee_rate=detection.package_fee_rate,
             )
         )
+
+
+def _tx0_linked_postmix_inputs(
+    inputs: tuple[OutPoint, ...],
+    premix_origins: dict[OutPoint, set[OutPoint]],
+) -> tuple[tuple[str, tuple[OutPoint, ...]], ...]:
+    """Find feasible 1:1 links from postmix inputs to one Tx0's premixes."""
+
+    source_txids = sorted(
+        {
+            origin.txid
+            for outpoint in inputs
+            for origin in premix_origins.get(outpoint, set())
+        }
+    )
+    findings: list[tuple[str, tuple[OutPoint, ...]]] = []
+    for source_txid in source_txids:
+        origin_to_input: dict[OutPoint, OutPoint] = {}
+
+        def assign(
+            input_outpoint: OutPoint,
+            visited_origins: set[OutPoint],
+        ) -> bool:
+            candidates = sorted(
+                (
+                    origin
+                    for origin in premix_origins.get(
+                        input_outpoint,
+                        set(),
+                    )
+                    if origin.txid == source_txid
+                ),
+                key=lambda outpoint: (outpoint.txid, outpoint.index),
+            )
+            for origin in candidates:
+                if origin in visited_origins:
+                    continue
+                visited_origins.add(origin)
+                current_input = origin_to_input.get(origin)
+                if current_input is None or assign(
+                    current_input,
+                    visited_origins,
+                ):
+                    origin_to_input[origin] = input_outpoint
+                    return True
+            return False
+
+        for input_outpoint in inputs:
+            assign(input_outpoint, set())
+
+        matched_inputs = tuple(
+            sorted(
+                set(origin_to_input.values()),
+                key=lambda outpoint: (outpoint.txid, outpoint.index),
+            )
+        )
+        if len(matched_inputs) >= 3:
+            findings.append((source_txid, matched_inputs))
+    return tuple(findings)
 
 
 _NOT_CACHED = object()

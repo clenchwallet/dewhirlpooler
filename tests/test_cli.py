@@ -573,7 +573,8 @@ def test_trace_prints_text_summary_and_key_findings(
         f"Postmix consolidation candidate: {'d' * 64} "
         "(2 co-spent tracked outputs)\n"
         "Possible Tx0 -> Whirlpool -> payment consolidation: "
-        f"{'7' * 64} (3 tracked postmix inputs)\n"
+        f"{'7' * 64} (3 one-to-one matched inputs)\n"
+        f"Source Tx0: {'a' * 64}\n"
         f"Possible Stonewall / StonewallX2: {'e' * 64} "
         "(medium confidence)\n"
         "Repeated output amounts: 408297 sats, 4588406 sats\n"
@@ -834,6 +835,7 @@ def _trace_report(*, truncated: bool = False) -> TraceReport:
         explanation=(
             "Three possible postmix descendants create one spendable output."
         ),
+        source_txids=("a" * 64,),
     )
     stonewall = TraceFinding(
         kind=TraceFindingKind.STONEWALL,

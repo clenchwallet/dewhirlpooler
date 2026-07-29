@@ -466,6 +466,16 @@ const PAYJOIN_SIGNAL_LABELS = {
 
 function findingDetailLines(finding) {
   const lines = [];
+  if (finding.kind === "postmix_payment_consolidation") {
+    lines.push(
+      `One-to-one matched inputs: ${Array.isArray(finding.outpoints) ? finding.outpoints.length : 0}`,
+    );
+    if (Array.isArray(finding.source_txids)) {
+      finding.source_txids.forEach((txid) => {
+        lines.push(`Source Tx0: ${txid}`);
+      });
+    }
+  }
   if (
     finding.kind === "stonewall" &&
     Array.isArray(finding.repeated_output_values_sats)
