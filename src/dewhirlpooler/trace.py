@@ -499,17 +499,22 @@ class ExposureTracer:
         detection: WhirlpoolDetection,
     ) -> bool:
         transaction_id = _transaction_node_id(transaction.txid)
-        if transaction_id in self._nodes:
+        existing_transaction = self._nodes.get(transaction_id)
+        if (
+            existing_transaction is not None
+            and existing_transaction.role != "previous_generation"
+        ):
             return True
-        transaction_count = sum(
-            node.kind is TraceNodeKind.TRANSACTION
-            for node in self._nodes.values()
-        )
-        if transaction_count >= self._limits.max_transactions:
-            self._truncate(
-                "Maximum transaction count reached; the report is partial."
+        if existing_transaction is None:
+            transaction_count = sum(
+                node.kind is TraceNodeKind.TRANSACTION
+                for node in self._nodes.values()
             )
-            return False
+            if transaction_count >= self._limits.max_transactions:
+                self._truncate(
+                    "Maximum transaction count reached; the report is partial."
+                )
+                return False
 
         self._nodes[transaction_id] = TraceNode(
             id=transaction_id,
@@ -536,6 +541,7 @@ class ExposureTracer:
             output_id = _output_node_id(
                 OutPoint(transaction.txid, output.index)
             )
+            classification = roles.get(output.index)
             if output_id not in self._nodes:
                 output_count = sum(
                     node.kind is TraceNodeKind.OUTPUT
@@ -546,7 +552,6 @@ class ExposureTracer:
                         "Maximum output count reached; the report is partial."
                     )
                     break
-                classification = roles.get(output.index)
                 self._nodes[output_id] = TraceNode(
                     id=output_id,
                     kind=TraceNodeKind.OUTPUT,
@@ -562,6 +567,20 @@ class ExposureTracer:
                         else OutputRole.UNCLASSIFIED.value
                     ),
                     status="unknown",
+                    confidence=(
+                        classification.confidence
+                        if classification is not None
+                        else Confidence.LOW
+                    ),
+                )
+            elif self._nodes[output_id].role == "previous_generation":
+                self._nodes[output_id] = replace(
+                    self._nodes[output_id],
+                    role=(
+                        classification.role.value
+                        if classification is not None
+                        else OutputRole.UNCLASSIFIED.value
+                    ),
                     confidence=(
                         classification.confidence
                         if classification is not None

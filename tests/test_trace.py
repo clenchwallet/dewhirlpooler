@@ -194,6 +194,50 @@ def test_adds_one_previous_generation_without_recursive_classification() -> None
     }
 
 
+def test_promotes_previous_generation_transaction_when_traced_later() -> None:
+    _, root, _, _, _ = _chain()
+    first_premix = OutPoint(root.txid, 10)
+    second_premix = OutPoint(root.txid, 11)
+    parent = _ordinary_transaction(
+        "d" * 64,
+        (second_premix,),
+        (1_000_000,),
+    )
+    parent_output = OutPoint(parent.txid, 0)
+    consolidation = _ordinary_transaction(
+        "e" * 64,
+        (first_premix, parent_output),
+        (500_000,),
+    )
+    resolver = FakeResolver(
+        {
+            root.txid: root,
+            parent.txid: parent,
+            consolidation.txid: consolidation,
+        },
+        {
+            root.txid: {},
+            parent.txid: {second_premix: root.outputs[11]},
+            consolidation.txid: {
+                first_premix: root.outputs[10],
+                parent_output: parent.outputs[0],
+            },
+        },
+        {
+            first_premix: consolidation,
+            second_premix: parent,
+            parent_output: consolidation,
+        },
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    nodes = {node.id: node for node in report.nodes}
+    transaction_node = nodes[f"tx:{parent.txid}"]
+    assert transaction_node.role is None
+    assert nodes[f"out:{parent.txid}:0"].role == "possible_payment"
+
+
 def test_flags_same_block_higher_fee_whirlpool_child_once() -> None:
     resolver, root, round_transaction, _, consolidation = _chain()
     resolver.heights.update(
