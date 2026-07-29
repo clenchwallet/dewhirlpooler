@@ -167,6 +167,33 @@ def test_traces_tx0_round_later_tx0_consolidation_and_unspent_outputs() -> None:
     )
 
 
+def test_adds_one_previous_generation_without_recursive_classification() -> None:
+    resolver, root, round_transaction, _, _ = _chain()
+    previous_output = next(
+        transaction_input.previous_output
+        for transaction_input in round_transaction.inputs
+        if transaction_input.previous_output.txid != root.txid
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    previous_transaction_id = f"tx:{previous_output.txid}"
+    previous_output_id = f"out:{previous_output.txid}:{previous_output.index}"
+    nodes = {node.id: node for node in report.nodes}
+    assert nodes[previous_transaction_id].role == "previous_generation"
+    assert nodes[previous_output_id].role == "previous_generation"
+    assert nodes[previous_output_id].status == "spent"
+    assert any(
+        edge.source == previous_output_id
+        and edge.target == f"tx:{round_transaction.txid}"
+        and edge.kind is TraceEdgeKind.SPENDS
+        for edge in report.edges
+    )
+    assert previous_output.txid not in {
+        transaction.txid for transaction in report.transactions
+    }
+
+
 def test_flags_same_block_higher_fee_whirlpool_child_once() -> None:
     resolver, root, round_transaction, _, consolidation = _chain()
     resolver.heights.update(
