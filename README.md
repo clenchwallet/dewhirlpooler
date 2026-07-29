@@ -150,6 +150,13 @@ data. Tx0, Whirlpool, postmix classifications, address roles, Payjoin/Cahoots,
 and links across a coinjoin are heuristics. A truncated trace or partial index
 reports its coverage limits.
 
+Coordinator profit is reported as a conservative range when a consolidation
+combines tracked coordinator outputs with untracked inputs. The profit upper
+bound assigns only the fee that cannot be covered by untracked inputs; the
+profit lower bound assigns the full mining fee because those untracked inputs
+may share coordinator ownership. Fully tracked consolidation fees remain
+exact, and a conservative lower bound can be negative.
+
 All browser assets are packaged locally; the application UI makes no CDN,
 analytics, telemetry, font, or other third-party browser requests.
 

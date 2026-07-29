@@ -88,6 +88,30 @@ function formatBtc(value) {
   })} BTC`;
 }
 
+function formatBtcRange(lowerValue, upperValue) {
+  const lower = Number(lowerValue);
+  const upper = Number(upperValue);
+  if (!Number.isFinite(lower) || !Number.isFinite(upper)) {
+    return "Unknown";
+  }
+  if (lower === upper) {
+    return formatBtc(upper);
+  }
+  return `${formatBtc(lower)} to ${formatBtc(upper)}`;
+}
+
+function formatSatsRange(lowerValue, upperValue) {
+  const lower = Number(lowerValue);
+  const upper = Number(upperValue);
+  if (!Number.isFinite(lower) || !Number.isFinite(upper)) {
+    return "Unknown";
+  }
+  if (lower === upper) {
+    return formatSats(upper);
+  }
+  return `${formatSats(lower)} to ${formatSats(upper)}`;
+}
+
 function poolName(poolId) {
   return POOL_NAMES[poolId] || readableName(poolId);
 }
@@ -141,9 +165,20 @@ function renderNetworkOverview(overview) {
       formatSats(coordinator.known_mining_cost_sats || 0),
     ),
     networkSummaryItem(
-      "Net known profit",
-      formatBtc(coordinator.net_known_profit_sats || 0),
-      "Gross fees minus fully attributable mining costs",
+      "Coordinator mining cost range",
+      formatSatsRange(
+        coordinator.minimum_coordinator_mining_cost_sats || 0,
+        coordinator.maximum_coordinator_mining_cost_sats || 0,
+      ),
+      "Mixed-input bounds without assuming who owns untracked inputs",
+    ),
+    networkSummaryItem(
+      "Net profit range",
+      formatBtcRange(
+        coordinator.net_profit_lower_bound_sats || 0,
+        coordinator.net_profit_upper_bound_sats || 0,
+      ),
+      "Gross fees minus known costs and the possible mixed-input cost",
     ),
     networkSummaryItem(
       "Ambiguous fee spends",

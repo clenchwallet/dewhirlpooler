@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,10 @@ def _network_overview() -> dict[str, object]:
             "gross_revenue_sats": 125_000,
             "known_mining_cost_sats": 539,
             "net_known_profit_sats": 124_461,
+            "minimum_coordinator_mining_cost_sats": 539,
+            "maximum_coordinator_mining_cost_sats": 739,
+            "net_profit_lower_bound_sats": 124_261,
+            "net_profit_upper_bound_sats": 124_461,
             "fee_output_count": 1,
             "ambiguous_spend_count": 1,
             "ambiguous_input_sats": 25_000,
@@ -440,6 +445,63 @@ def test_default_network_service_reads_existing_index(
     }
     assert body["coordinator"]["gross_revenue_sats"] == 0
     assert len(body["pools"]) == 6
+
+
+def test_default_network_service_reports_mixed_input_profit_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "chain.sqlite3"
+    with ChainIndex(
+        ChainIndexSettings(path=path, start_height=550_000)
+    ) as index:
+        index.apply_block(
+            CoreBlock(
+                height=550_000,
+                block_hash="1" * 64,
+                previous_block_hash=None,
+                block_time=1_700_000_000,
+                transactions=(),
+            )
+        )
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(
+        """
+        INSERT INTO coordinator_fee_utxos VALUES (
+            ?, 0, 'ashigaru-0.025', 125000, 'script', 'high',
+            'current_fixed_fee', 550000, 550000, ?
+        )
+        """,
+        ("a" * 64, "b" * 64),
+    )
+    connection.execute(
+        """
+        INSERT INTO coordinator_spends VALUES (
+            ?, 550000, 125000, 225000, 130000, 0, 0
+        )
+        """,
+        ("b" * 64,),
+    )
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv("DEWHIRLPOOLER_CHAIN_DB", str(path))
+
+    response = TestClient(create_app(FakeTraceService())).get("/api/network")
+
+    assert response.status_code == 200
+    assert response.json()["coordinator"] == {
+        "gross_revenue_sats": 125_000,
+        "known_mining_cost_sats": 0,
+        "net_known_profit_sats": 125_000,
+        "minimum_coordinator_mining_cost_sats": 30_000,
+        "maximum_coordinator_mining_cost_sats": 130_000,
+        "net_profit_lower_bound_sats": -5_000,
+        "net_profit_upper_bound_sats": 95_000,
+        "fee_output_count": 1,
+        "ambiguous_spend_count": 1,
+        "ambiguous_input_sats": 125_000,
+    }
 
 
 def test_default_network_service_missing_or_corrupt_database_is_safe(
@@ -830,7 +892,9 @@ def test_browser_source_presents_phase_six_metrics_and_heuristic_warning() -> No
         "within these limits",
         "Gross coordinator fees",
         "Known consolidation costs",
-        "Net known profit",
+        "Coordinator mining cost range",
+        "Net profit range",
+        "possible mixed-input cost",
         "Ambiguous fee spends",
         "Indexed blocks",
         "Recent blocks for this pool are not available yet.",

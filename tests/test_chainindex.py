@@ -22,6 +22,7 @@ from dewhirlpooler.chainindex import (
     ChainIndexReader,
     ChainIndexSettings,
     ChainScanner,
+    CoordinatorSummary,
 )
 from dewhirlpooler.core import CoreRpcError
 from dewhirlpooler.whirlpool import DEFAULT_POOLS
@@ -30,6 +31,15 @@ FIXTURES = Path(__file__).parent / "fixtures"
 START_HEIGHT = 100
 POOL_ID = "ashigaru-0.025"
 DENOMINATION = 2_500_000
+
+
+def test_coordinator_summary_legacy_constructor_uses_known_cost() -> None:
+    summary = CoordinatorSummary(1_000, 100, 900, 1, 0, 0)
+
+    assert summary.minimum_coordinator_mining_cost_sats == 100
+    assert summary.maximum_coordinator_mining_cost_sats == 100
+    assert summary.net_profit_lower_bound_sats == 900
+    assert summary.net_profit_upper_bound_sats == 900
 
 
 def _fixture(name: str) -> Transaction:
@@ -598,6 +608,10 @@ def test_tx0_adds_liquidity_and_coordinator_revenue(tmp_path: Path) -> None:
         assert summary.gross_revenue_sats == 125_000
         assert summary.known_mining_cost_sats == 0
         assert summary.net_known_profit_sats == 125_000
+        assert summary.minimum_coordinator_mining_cost_sats == 0
+        assert summary.maximum_coordinator_mining_cost_sats == 0
+        assert summary.net_profit_lower_bound_sats == 125_000
+        assert summary.net_profit_upper_bound_sats == 125_000
         assert summary.fee_output_count == 1
         assert summary.ambiguous_spend_count == 0
 
@@ -654,6 +668,7 @@ def test_untracked_round_does_not_mint_liquidity(tmp_path: Path) -> None:
 
 
 def test_coordinator_pure_and_ambiguous_spends(tmp_path: Path) -> None:
+    path = tmp_path / "chain.sqlite3"
     first = _tx0_block_transaction(txid="1" * 64)
     second = _tx0_block_transaction(txid="2" * 64)
     fee_output = first.transaction.outputs[1]
@@ -683,7 +698,7 @@ def test_coordinator_pure_and_ambiguous_spends(tmp_path: Path) -> None:
         extra_inputs=(unrelated,),
     )
 
-    with ChainIndex(_settings(tmp_path / "chain.sqlite3")) as index:
+    with ChainIndex(_settings(path)) as index:
         index.apply_block(_block(100, (first,)))
         index.apply_block(_block(101, (second,)))
         index.apply_block(_block(102, (pure_spend, ambiguous_spend)))
@@ -692,8 +707,53 @@ def test_coordinator_pure_and_ambiguous_spends(tmp_path: Path) -> None:
         assert summary.gross_revenue_sats == 250_000
         assert summary.known_mining_cost_sats == 1_000
         assert summary.net_known_profit_sats == 249_000
+        assert summary.minimum_coordinator_mining_cost_sats == 1_000
+        assert summary.maximum_coordinator_mining_cost_sats == 3_000
+        assert summary.net_profit_lower_bound_sats == 247_000
+        assert summary.net_profit_upper_bound_sats == 249_000
         assert summary.ambiguous_spend_count == 1
         assert summary.ambiguous_input_sats == 125_000
+
+    with ChainIndexReader(path) as reader:
+        assert reader.coordinator_summary() == summary
+
+
+def test_mixed_input_profit_bound_includes_full_miner_fee(
+    tmp_path: Path,
+) -> None:
+    tx0 = _tx0_block_transaction()
+    unrelated = (
+        OutPoint("4" * 64, 0),
+        TxOutput(
+            index=0,
+            value_sats=100_000,
+            script_pubkey=b"\x00\x14" + b"\x44" * 20,
+            script_type=ScriptType.P2WPKH,
+        ),
+    )
+    ambiguous_spend = _spend(
+        (
+            (
+                OutPoint(tx0.transaction.txid, 1),
+                tx0.transaction.outputs[1],
+            ),
+        ),
+        txid="5" * 64,
+        fee_sats=130_000,
+        extra_inputs=(unrelated,),
+    )
+
+    with ChainIndex(_settings(tmp_path / "chain.sqlite3")) as index:
+        index.apply_block(_block(100, (tx0,)))
+        index.apply_block(_block(101, (ambiguous_spend,)))
+
+        summary = index.coordinator_summary()
+        assert summary.gross_revenue_sats == 125_000
+        assert summary.ambiguous_input_sats == 125_000
+        assert summary.minimum_coordinator_mining_cost_sats == 30_000
+        assert summary.maximum_coordinator_mining_cost_sats == 130_000
+        assert summary.net_profit_lower_bound_sats == -5_000
+        assert summary.net_profit_upper_bound_sats == 95_000
 
 
 def test_same_block_tx0_round_and_coordinator_spend_are_atomic(
@@ -730,6 +790,10 @@ def test_same_block_tx0_round_and_coordinator_spend_are_atomic(
         assert summary.gross_revenue_sats == 125_000
         assert summary.known_mining_cost_sats == 125_000
         assert summary.net_known_profit_sats == 0
+        assert summary.minimum_coordinator_mining_cost_sats == 125_000
+        assert summary.maximum_coordinator_mining_cost_sats == 125_000
+        assert summary.net_profit_lower_bound_sats == 0
+        assert summary.net_profit_upper_bound_sats == 0
 
         connection = sqlite3.connect(index.settings.path)
         spent = connection.execute(
