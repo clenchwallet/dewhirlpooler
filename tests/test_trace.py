@@ -235,13 +235,49 @@ def test_flags_three_coin_one_output_payment_consolidation() -> None:
     assert bonus[0].outpoints == tuple(
         sorted(tracked, key=lambda item: (item.txid, item.index))
     )
-    assert "one spendable output" in bonus[0].explanation
+    assert bonus[0].source_txids == (root.txid,)
+    assert "one-to-one match" in bonus[0].explanation
     assert "remain heuristic" in bonus[0].explanation
     assert report.summary.postmix_consolidations == 1
     assert report.summary.postmix_payment_consolidations == 1
     assert report.to_dict()["summary"][
         "postmix_payment_consolidations"
     ] == 1
+    serialized = next(
+        item
+        for item in report.to_dict()["findings"]
+        if item["kind"] == "postmix_payment_consolidation"
+    )
+    assert serialized["source_txids"] == [root.txid]
+
+
+def test_does_not_multiply_one_ambiguous_premix_into_three_origins() -> None:
+    resolver, root, round_transaction, _, _ = _chain()
+    tracked = tuple(
+        OutPoint(round_transaction.txid, index) for index in range(3)
+    )
+    consolidation = _ordinary_transaction(
+        "9" * 64,
+        tracked,
+        (1_000_000,),
+    )
+    resolver.transactions[consolidation.txid] = consolidation
+    resolver.prevout_maps[consolidation.txid] = {
+        outpoint: round_transaction.outputs[outpoint.index]
+        for outpoint in tracked
+    }
+    for outpoint in tracked:
+        resolver.spends[outpoint] = consolidation
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    assert report.summary.postmix_consolidations == 1
+    assert report.summary.postmix_payment_consolidations == 0
+    assert all(
+        finding.kind
+        is not TraceFindingKind.POSTMIX_PAYMENT_CONSOLIDATION
+        for finding in report.findings
+    )
 
 
 def test_flags_exact_address_reuse_across_tx0_and_round_roles() -> None:
@@ -837,7 +873,7 @@ def _three_coin_payment_consolidation(
     output_values: tuple[int, ...] = (1_000_000,),
     op_return_only: bool = False,
 ) -> tuple[FakeResolver, Transaction, Transaction, tuple[OutPoint, ...]]:
-    resolver, root, round_transaction, _, _ = _chain()
+    resolver, root, round_transaction = _three_origin_round_chain()
     tracked = tuple(
         OutPoint(round_transaction.txid, index)
         for index in input_indices
@@ -875,6 +911,64 @@ def _three_coin_payment_consolidation(
     for outpoint in tracked:
         resolver.spends[outpoint] = consolidation
     return resolver, root, consolidation, tracked
+
+
+def _three_origin_round_chain() -> tuple[
+    FakeResolver,
+    Transaction,
+    Transaction,
+]:
+    root = _fixture("ashigaru-tx0-0.025.hex")
+    round_template = _fixture("ashigaru-round-0.025.hex")
+    source_outpoints = tuple(
+        OutPoint(root.txid, index) for index in (9, 10, 11)
+    )
+    round_inputs = tuple(
+        replace(
+            transaction_input,
+            previous_output=(
+                source_outpoints[position]
+                if position < len(source_outpoints)
+                else transaction_input.previous_output
+            ),
+        )
+        for position, transaction_input in enumerate(round_template.inputs)
+    )
+    round_transaction = replace(
+        round_template,
+        inputs=round_inputs,
+        txid="7" * 64,
+        wtxid="7" * 64,
+    )
+    round_prevouts: dict[OutPoint, TxOutput] = {}
+    for position, transaction_input in enumerate(round_transaction.inputs):
+        if position < len(source_outpoints):
+            round_prevouts[transaction_input.previous_output] = root.outputs[
+                source_outpoints[position].index
+            ]
+        else:
+            round_prevouts[transaction_input.previous_output] = TxOutput(
+                index=transaction_input.previous_output.index,
+                value_sats=2_500_000,
+                script_pubkey=b"\x00\x14" + bytes((position + 1,)) * 20,
+                script_type=ScriptType.P2WPKH,
+            )
+
+    resolver = FakeResolver(
+        {
+            root.txid: root,
+            round_transaction.txid: round_transaction,
+        },
+        {
+            root.txid: {},
+            round_transaction.txid: round_prevouts,
+        },
+        {
+            outpoint: round_transaction
+            for outpoint in source_outpoints
+        },
+    )
+    return resolver, root, round_transaction
 
 
 def _address_reuse_chain() -> tuple[

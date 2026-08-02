@@ -12,6 +12,8 @@ It provides:
 - exact Tx0 accounting and 5:5 through 8:8 entrant/remixer metrics;
 - bounded Stonewall, Ricochet, CPFP, address-reuse, postmix-consolidation, and
   Payjoin/Cahoots fingerprint signals;
+- source-aware 3+ coin payment consolidations that require a one-to-one match
+  to distinct premix outputs from the same Tx0;
 - a resumable, reorg-safe coordinator and pool-liquidity index;
 - CLI and HTTP interfaces plus a local Cytoscape graph; and
 - an optional SQLite report cache and non-root Docker deployment.

@@ -584,8 +584,9 @@ def _print_trace(report: TraceReport) -> None:
             print(
                 "Possible Tx0 -> Whirlpool -> payment consolidation: "
                 f"{finding.txid} "
-                f"({len(finding.outpoints)} tracked postmix inputs)"
+                f"({len(finding.outpoints)} one-to-one matched inputs)"
             )
+            print("Source Tx0: " + ", ".join(finding.source_txids))
         elif finding.kind is TraceFindingKind.STONEWALL:
             print(
                 f"Possible Stonewall / StonewallX2: {finding.txid} "
