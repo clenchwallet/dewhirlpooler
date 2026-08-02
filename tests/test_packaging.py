@@ -18,6 +18,8 @@ def test_all_packaging_files_exist() -> None:
         "Dockerfile",
         "LICENSE",
         "compose.yaml",
+        "deploy/systemd/dewhirlpooler-index.service",
+        "deploy/systemd/dewhirlpooler-index.timer",
         "docs/assets/dewhirlpooler-trace.png",
         "docs/deployment.md",
         "docs/public-example.md",
@@ -41,7 +43,7 @@ def test_readme_links_the_reproducible_public_example() -> None:
     )
     assert "Trace depth: `2`" in public_example
     assert "observed public-chain data" in public_example
-    assert "releases/download/v0.1.0" not in readme
+    assert "releases/download/v0.1.0" in readme
 
 
 def test_project_uses_the_owner_selected_mit_license() -> None:
@@ -271,6 +273,98 @@ def test_deployment_docs_cover_runtime_and_lifecycle() -> None:
     assert "10001:10001" in docs
     assert "`bypass`" in docs
     assert "unhealthy" in docs
+
+
+def test_historical_index_bundle_installation_is_documented() -> None:
+    readme = read("README.md")
+    asset = (
+        "dewhirlpooler-v0.1.0-mainnet-index-schema1-"
+        "571000-960650.sqlite3.zst"
+    )
+
+    assert "## Historical index bundle" in readme
+    assert asset in readme
+    assert "dewhirlpooler-v0.1.0-mainnet-index-manifest.json" in readme
+    assert "SHA256SUMS" in readme
+    assert "sha256sum --check SHA256SUMS" in readme
+    assert f"zstd -d {asset}" in readme
+    assert "export DEWHIRLPOOLER_CHAIN_DB=" in readme
+    assert "dewhirlpooler chain-status" in readme
+    assert "dewhirlpooler chain-index" in readme
+    assert "Do not overwrite a newer local index" in readme
+    assert "never SQLite `-wal` or `-shm` files" in readme
+
+
+def test_systemd_refresh_units_and_lifecycle_are_portable() -> None:
+    service = read("deploy/systemd/dewhirlpooler-index.service")
+    timer = read("deploy/systemd/dewhirlpooler-index.timer")
+    docs = read("docs/deployment.md")
+    docs_lower = re.sub(r"\s+", " ", docs.lower())
+
+    service_directives = {
+        "Wants=network-online.target",
+        "After=network-online.target",
+        "Type=simple",
+        "EnvironmentFile=%h/.config/dewhirlpooler/core.env",
+        "EnvironmentFile=%h/.config/dewhirlpooler/index.env",
+        "ExecStart=%h/.local/bin/dewhirlpooler chain-index",
+        "Restart=on-failure",
+        "RestartSec=30s",
+        "NoNewPrivileges=true",
+        "PrivateTmp=true",
+        "WantedBy=default.target",
+    }
+    timer_directives = {
+        "OnCalendar=*:0/5",
+        "AccuracySec=15s",
+        "Persistent=true",
+        "Unit=dewhirlpooler-index.service",
+        "WantedBy=timers.target",
+    }
+
+    assert all(directive in service for directive in service_directives)
+    assert all(directive in timer for directive in timer_directives)
+    assert "WorkingDirectory=" not in service
+    assert "five-minute schedule" in docs_lower
+    assert "30 seconds" in docs_lower
+    assert "inactive service between timer runs is expected" in docs_lower
+    assert "systemctl --user daemon-reload" in docs
+    assert "systemctl --user enable --now dewhirlpooler-index.timer" in docs
+    assert "systemctl --user list-timers dewhirlpooler-index.timer" in docs
+    assert "journalctl --user -u dewhirlpooler-index.service" in docs
+    assert "dewhirlpooler chain-status" in docs
+
+
+def test_systemd_examples_and_docs_contain_no_local_infrastructure() -> None:
+    content = "\n".join(
+        (
+            read("deploy/systemd/dewhirlpooler-index.service"),
+            read("deploy/systemd/dewhirlpooler-index.timer"),
+            read("docs/deployment.md"),
+        )
+    )
+    private_ip = re.compile(
+        r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+        r"|192\.168\.\d{1,3}\.\d{1,3}"
+        r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b"
+    )
+    credential_assignment = re.compile(
+        r"(?im)^\s*DEWHIRLPOOLER_CORE_(?:USER|PASSWORD)=(?!<[^>]+>$).+$"
+    )
+
+    assert "/home/clawd" not in content
+    assert "tail7d2b0" not in content
+    assert private_ip.search(content) is None
+    assert credential_assignment.search(content) is None
+
+
+def test_release_notes_describe_optional_historical_snapshots_accurately() -> None:
+    workflow = read(".github/workflows/ci.yml")
+
+    assert "The historical index is not bundled" not in workflow
+    assert "Checksummed point-in-time historical index snapshots" in workflow
+    assert "published as separate release assets when available" in workflow
+    assert "dewhirlpooler chain-index" in workflow
 
 
 def test_packaging_configuration_contains_no_private_material() -> None:

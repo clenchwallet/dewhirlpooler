@@ -146,7 +146,7 @@ jobs:
             '- Resumable SQLite pool-liquidity and coordinator accounting index' \
             '- Local report cache and Docker Compose packaging' \
             '' \
-            'The historical index is not bundled. Run `dewhirlpooler chain-index` locally to populate network-wide statistics.' \
+            'Checksummed point-in-time historical index snapshots are published as separate release assets when available. Users can always run `dewhirlpooler chain-index` locally to build or catch up an index.' \
             > "$notes_file"
           gh release create "$tag" \
             --target "$GITHUB_SHA" \
