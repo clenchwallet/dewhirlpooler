@@ -108,6 +108,37 @@ Override them with `--max-depth`, `--max-transactions`, `--max-outputs`, and
 The configured start height is persisted in the database. The web process
 opens `DEWHIRLPOOLER_CHAIN_DB` read-only and does not require Core credentials.
 
+## Historical index bundle
+
+The v0.1.0 historical index bundle is a point-in-time snapshot of public-chain
+data classified with DeWhirlpooler's heuristics. It covers mainnet blocks
+571,000 through 960,650; it is not a trusted or continuously updated source.
+Download the snapshot and its verification files from the
+[v0.1.0 release assets](https://github.com/clenchwallet/dewhirlpooler/releases/download/v0.1.0):
+
+```bash
+mkdir dewhirlpooler-index-v0.1.0
+cd dewhirlpooler-index-v0.1.0
+
+curl -fLO https://github.com/clenchwallet/dewhirlpooler/releases/download/v0.1.0/dewhirlpooler-v0.1.0-mainnet-index-schema1-571000-960650.sqlite3.zst
+curl -fLO https://github.com/clenchwallet/dewhirlpooler/releases/download/v0.1.0/dewhirlpooler-v0.1.0-mainnet-index-manifest.json
+curl -fLO https://github.com/clenchwallet/dewhirlpooler/releases/download/v0.1.0/SHA256SUMS
+
+sha256sum --check SHA256SUMS
+mkdir -p "$HOME/.local/share/dewhirlpooler"
+zstd -d dewhirlpooler-v0.1.0-mainnet-index-schema1-571000-960650.sqlite3.zst \
+  -o "$HOME/.local/share/dewhirlpooler/chain.sqlite3"
+
+export DEWHIRLPOOLER_CHAIN_DB="$HOME/.local/share/dewhirlpooler/chain.sqlite3"
+dewhirlpooler chain-status
+dewhirlpooler chain-index
+```
+
+Verify the checksums before decompression, and decompress into a new
+`chain.sqlite3` path. Do not overwrite a newer local index. Use only the
+snapshot database, never SQLite `-wal` or `-shm` files. The final
+`chain-index` command catches up from height 960,650 to your Bitcoin Core tip.
+
 ## HTTP API
 
 Trace:

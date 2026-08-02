@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the DeWhirlpooler historical index every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=15s
+Persistent=true
+Unit=dewhirlpooler-index.service
+
+[Install]
+WantedBy=timers.target

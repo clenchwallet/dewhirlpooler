@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh the DeWhirlpooler historical index
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/dewhirlpooler/core.env
+EnvironmentFile=%h/.config/dewhirlpooler/index.env
+ExecStart=%h/.local/bin/dewhirlpooler chain-index
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
