@@ -167,6 +167,77 @@ def test_traces_tx0_round_later_tx0_consolidation_and_unspent_outputs() -> None:
     )
 
 
+def test_adds_one_previous_generation_without_recursive_classification() -> None:
+    resolver, root, round_transaction, _, _ = _chain()
+    previous_output = next(
+        transaction_input.previous_output
+        for transaction_input in round_transaction.inputs
+        if transaction_input.previous_output.txid != root.txid
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    previous_transaction_id = f"tx:{previous_output.txid}"
+    previous_output_id = f"out:{previous_output.txid}:{previous_output.index}"
+    nodes = {node.id: node for node in report.nodes}
+    assert nodes[previous_transaction_id].role == "previous_generation"
+    assert nodes[previous_output_id].role == "previous_generation"
+    assert nodes[previous_output_id].status == "spent"
+    assert any(
+        edge.source == previous_output_id
+        and edge.target == f"tx:{round_transaction.txid}"
+        and edge.kind is TraceEdgeKind.SPENDS
+        for edge in report.edges
+    )
+    assert previous_output.txid not in {
+        transaction.txid for transaction in report.transactions
+    }
+
+
+def test_promotes_previous_generation_transaction_when_traced_later() -> None:
+    _, root, _, _, _ = _chain()
+    first_premix = OutPoint(root.txid, 10)
+    second_premix = OutPoint(root.txid, 11)
+    parent = _ordinary_transaction(
+        "d" * 64,
+        (second_premix,),
+        (1_000_000,),
+    )
+    parent_output = OutPoint(parent.txid, 0)
+    consolidation = _ordinary_transaction(
+        "e" * 64,
+        (first_premix, parent_output),
+        (500_000,),
+    )
+    resolver = FakeResolver(
+        {
+            root.txid: root,
+            parent.txid: parent,
+            consolidation.txid: consolidation,
+        },
+        {
+            root.txid: {},
+            parent.txid: {second_premix: root.outputs[11]},
+            consolidation.txid: {
+                first_premix: root.outputs[10],
+                parent_output: parent.outputs[0],
+            },
+        },
+        {
+            first_premix: consolidation,
+            second_premix: parent,
+            parent_output: consolidation,
+        },
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    nodes = {node.id: node for node in report.nodes}
+    transaction_node = nodes[f"tx:{parent.txid}"]
+    assert transaction_node.role is None
+    assert nodes[f"out:{parent.txid}:0"].role == "possible_payment"
+
+
 def test_flags_same_block_higher_fee_whirlpool_child_once() -> None:
     resolver, root, round_transaction, _, consolidation = _chain()
     resolver.heights.update(

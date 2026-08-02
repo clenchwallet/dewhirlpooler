@@ -359,6 +359,7 @@ class ExposureTracer:
             )
             return self._report(root.txid)
 
+        self._add_previous_generation(root)
         frontier: deque[_FrontierItem] = deque()
         if root_detection.kind is TransactionKind.TX0:
             self._enqueue_roles(
@@ -413,6 +414,7 @@ class ExposureTracer:
             spending_detection = self._detection(spending)
             if not self._add_transaction(spending, spending_detection):
                 break
+            self._add_previous_generation(spending)
             self._mark_output_status(item.outpoint, "spent")
             self._add_edge(
                 source=_output_node_id(item.outpoint),
@@ -497,17 +499,22 @@ class ExposureTracer:
         detection: WhirlpoolDetection,
     ) -> bool:
         transaction_id = _transaction_node_id(transaction.txid)
-        if transaction_id in self._nodes:
+        existing_transaction = self._nodes.get(transaction_id)
+        if (
+            existing_transaction is not None
+            and existing_transaction.role != "previous_generation"
+        ):
             return True
-        transaction_count = sum(
-            node.kind is TraceNodeKind.TRANSACTION
-            for node in self._nodes.values()
-        )
-        if transaction_count >= self._limits.max_transactions:
-            self._truncate(
-                "Maximum transaction count reached; the report is partial."
+        if existing_transaction is None:
+            transaction_count = sum(
+                node.kind is TraceNodeKind.TRANSACTION
+                for node in self._nodes.values()
             )
-            return False
+            if transaction_count >= self._limits.max_transactions:
+                self._truncate(
+                    "Maximum transaction count reached; the report is partial."
+                )
+                return False
 
         self._nodes[transaction_id] = TraceNode(
             id=transaction_id,
@@ -534,6 +541,7 @@ class ExposureTracer:
             output_id = _output_node_id(
                 OutPoint(transaction.txid, output.index)
             )
+            classification = roles.get(output.index)
             if output_id not in self._nodes:
                 output_count = sum(
                     node.kind is TraceNodeKind.OUTPUT
@@ -544,7 +552,6 @@ class ExposureTracer:
                         "Maximum output count reached; the report is partial."
                     )
                     break
-                classification = roles.get(output.index)
                 self._nodes[output_id] = TraceNode(
                     id=output_id,
                     kind=TraceNodeKind.OUTPUT,
@@ -566,6 +573,20 @@ class ExposureTracer:
                         else Confidence.LOW
                     ),
                 )
+            elif self._nodes[output_id].role == "previous_generation":
+                self._nodes[output_id] = replace(
+                    self._nodes[output_id],
+                    role=(
+                        classification.role.value
+                        if classification is not None
+                        else OutputRole.UNCLASSIFIED.value
+                    ),
+                    confidence=(
+                        classification.confidence
+                        if classification is not None
+                        else Confidence.LOW
+                    ),
+                )
             self._add_edge(
                 source=transaction_id,
                 target=output_id,
@@ -574,6 +595,89 @@ class ExposureTracer:
                 explanation="The transaction creates this output.",
             )
         return True
+
+    def _add_previous_generation(self, transaction: Transaction) -> None:
+        """Add exact input prevouts as one non-recursive context generation."""
+
+        for transaction_input in transaction.inputs:
+            outpoint = transaction_input.previous_output
+            output = self._prevouts.get(transaction.txid, {}).get(outpoint)
+            if output is None:
+                continue
+
+            transaction_id = _transaction_node_id(outpoint.txid)
+            output_id = _output_node_id(outpoint)
+            needs_transaction = transaction_id not in self._nodes
+            needs_output = output_id not in self._nodes
+            if needs_transaction:
+                transaction_count = sum(
+                    node.kind is TraceNodeKind.TRANSACTION
+                    for node in self._nodes.values()
+                )
+                if transaction_count >= self._limits.max_transactions:
+                    self._truncate(
+                        "Maximum transaction count reached; previous-generation "
+                        "context is partial."
+                    )
+                    return
+            if needs_output:
+                output_count = sum(
+                    node.kind is TraceNodeKind.OUTPUT
+                    for node in self._nodes.values()
+                )
+                if output_count >= self._limits.max_outputs:
+                    self._truncate(
+                        "Maximum output count reached; previous-generation "
+                        "context is partial."
+                    )
+                    return
+
+            if needs_transaction:
+                self._nodes[transaction_id] = TraceNode(
+                    id=transaction_id,
+                    kind=TraceNodeKind.TRANSACTION,
+                    txid=outpoint.txid,
+                    output_index=None,
+                    value_sats=None,
+                    script_type=None,
+                    transaction_kind=TransactionKind.UNKNOWN.value,
+                    pool=None,
+                    role="previous_generation",
+                    status=None,
+                    confidence=Confidence.LOW,
+                )
+
+            if needs_output:
+                self._nodes[output_id] = TraceNode(
+                    id=output_id,
+                    kind=TraceNodeKind.OUTPUT,
+                    txid=outpoint.txid,
+                    output_index=outpoint.index,
+                    value_sats=output.value_sats,
+                    script_type=output.script_type.value,
+                    transaction_kind=None,
+                    pool=None,
+                    role="previous_generation",
+                    status="spent",
+                    confidence=Confidence.HIGH,
+                )
+            else:
+                self._mark_output_status(outpoint, "spent")
+
+            self._add_edge(
+                source=transaction_id,
+                target=output_id,
+                kind=TraceEdgeKind.CREATES,
+                confidence=Confidence.HIGH,
+                explanation="The previous transaction creates this input.",
+            )
+            self._add_edge(
+                source=output_id,
+                target=_transaction_node_id(transaction.txid),
+                kind=TraceEdgeKind.SPENDS,
+                confidence=Confidence.HIGH,
+                explanation="This resolved previous output is spent here.",
+            )
 
     def _enqueue_roles(
         self,
@@ -942,6 +1046,7 @@ class ExposureTracer:
             detection = self._detection(transaction)
             if not self._add_transaction(transaction, detection):
                 return set()
+            self._add_previous_generation(transaction)
             self._mark_output_status(source_outpoint, "spent")
             self._mark_output_role(
                 source_outpoint,
@@ -1124,11 +1229,11 @@ class ExposureTracer:
             and OutPoint(node.txid, node.output_index or 0) in unspent_outpoints
         )
         summary = TraceSummary(
-            transactions_examined=sum(
-                node.kind is TraceNodeKind.TRANSACTION for node in nodes
-            ),
+            transactions_examined=len(self._transactions),
             outputs_examined=sum(
-                node.kind is TraceNodeKind.OUTPUT for node in nodes
+                node.kind is TraceNodeKind.OUTPUT
+                and node.txid in self._transactions
+                for node in nodes
             ),
             whirlpool_rounds=sum(
                 node.kind is TraceNodeKind.TRANSACTION
