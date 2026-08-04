@@ -133,6 +133,34 @@ class CoordinatorSummary:
     fee_output_count: int
     ambiguous_spend_count: int
     ambiguous_input_sats: int
+    minimum_coordinator_mining_cost_sats: int | None = None
+    maximum_coordinator_mining_cost_sats: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.minimum_coordinator_mining_cost_sats is None:
+            object.__setattr__(
+                self,
+                "minimum_coordinator_mining_cost_sats",
+                self.known_mining_cost_sats,
+            )
+        if self.maximum_coordinator_mining_cost_sats is None:
+            object.__setattr__(
+                self,
+                "maximum_coordinator_mining_cost_sats",
+                self.known_mining_cost_sats,
+            )
+
+    @property
+    def net_profit_lower_bound_sats(self) -> int:
+        maximum_cost = self.maximum_coordinator_mining_cost_sats
+        assert maximum_cost is not None
+        return self.gross_revenue_sats - maximum_cost
+
+    @property
+    def net_profit_upper_bound_sats(self) -> int:
+        minimum_cost = self.minimum_coordinator_mining_cost_sats
+        assert minimum_cost is not None
+        return self.gross_revenue_sats - minimum_cost
 
 
 @dataclass(frozen=True, slots=True)
@@ -681,7 +709,19 @@ class ChainIndex:
                            THEN tracked_input_sats
                            ELSE 0
                        END
-                   ), 0)
+                   ), 0),
+                   COALESCE(SUM(
+                       CASE
+                           WHEN miner_fee_sats > (
+                               total_input_sats - tracked_input_sats
+                           )
+                           THEN miner_fee_sats - (
+                               total_input_sats - tracked_input_sats
+                           )
+                           ELSE 0
+                       END
+                   ), 0),
+                   COALESCE(SUM(miner_fee_sats), 0)
             FROM coordinator_spends
             """
         ).fetchone()
@@ -694,6 +734,8 @@ class ChainIndex:
             fee_output_count=int(fee_row[1]),
             ambiguous_spend_count=int(spend_row[1]),
             ambiguous_input_sats=int(spend_row[2]),
+            minimum_coordinator_mining_cost_sats=int(spend_row[3]),
+            maximum_coordinator_mining_cost_sats=int(spend_row[4]),
         )
 
     def _validate_path(self) -> None:
@@ -1370,7 +1412,19 @@ class ChainIndexReader:
                                THEN tracked_input_sats
                                ELSE 0
                            END
-                       ), 0)
+                       ), 0),
+                       COALESCE(SUM(
+                           CASE
+                               WHEN miner_fee_sats > (
+                                   total_input_sats - tracked_input_sats
+                               )
+                               THEN miner_fee_sats - (
+                                   total_input_sats - tracked_input_sats
+                               )
+                               ELSE 0
+                           END
+                       ), 0),
+                       COALESCE(SUM(miner_fee_sats), 0)
                 FROM coordinator_spends
                 """
             ).fetchone()
@@ -1387,6 +1441,8 @@ class ChainIndexReader:
             fee_output_count=int(fee_row[1]),
             ambiguous_spend_count=int(spend_row[1]),
             ambiguous_input_sats=int(spend_row[2]),
+            minimum_coordinator_mining_cost_sats=int(spend_row[3]),
+            maximum_coordinator_mining_cost_sats=int(spend_row[4]),
         )
 
     def pool_history(

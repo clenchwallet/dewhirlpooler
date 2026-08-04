@@ -276,6 +276,12 @@ def test_chain_index_and_status_use_resumable_database(
         "0 sats in 0 output(s)\n"
     ) in captured.out
     assert "Coordinator gross fees: 0 sats\n" in captured.out
+    assert "Coordinator net known profit: 0 sats\n" in captured.out
+    assert (
+        "Coordinator mining cost range: 0-0 sats\n"
+        in captured.out
+    )
+    assert "Coordinator net profit range: 0-0 sats\n" in captured.out
     assert "Ambiguous coordinator spends: 0 (0 tracked sats)\n" in (
         captured.out
     )

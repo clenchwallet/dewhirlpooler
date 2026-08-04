@@ -182,6 +182,18 @@ def _coordinator_dict(
         "gross_revenue_sats": summary.gross_revenue_sats,
         "known_mining_cost_sats": summary.known_mining_cost_sats,
         "net_known_profit_sats": summary.net_known_profit_sats,
+        "minimum_coordinator_mining_cost_sats": (
+            summary.minimum_coordinator_mining_cost_sats
+        ),
+        "maximum_coordinator_mining_cost_sats": (
+            summary.maximum_coordinator_mining_cost_sats
+        ),
+        "net_profit_lower_bound_sats": (
+            summary.net_profit_lower_bound_sats
+        ),
+        "net_profit_upper_bound_sats": (
+            summary.net_profit_upper_bound_sats
+        ),
         "fee_output_count": summary.fee_output_count,
         "ambiguous_spend_count": summary.ambiguous_spend_count,
         "ambiguous_input_sats": summary.ambiguous_input_sats,

@@ -291,8 +291,18 @@ def _run_chain_status(args: argparse.Namespace) -> int:
         f"{coordinator.known_mining_cost_sats} sats"
     )
     print(
-        f"Coordinator net known profit: "
+        "Coordinator net known profit: "
         f"{coordinator.net_known_profit_sats} sats"
+    )
+    print(
+        "Coordinator mining cost range: "
+        f"{coordinator.minimum_coordinator_mining_cost_sats}-"
+        f"{coordinator.maximum_coordinator_mining_cost_sats} sats"
+    )
+    print(
+        "Coordinator net profit range: "
+        f"{coordinator.net_profit_lower_bound_sats}-"
+        f"{coordinator.net_profit_upper_bound_sats} sats"
     )
     print(
         "Ambiguous coordinator spends: "
