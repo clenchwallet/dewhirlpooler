@@ -181,8 +181,21 @@ data. Tx0, Whirlpool, postmix classifications, address roles, Payjoin/Cahoots,
 and links across a coinjoin are heuristics. A truncated trace or partial index
 reports its coverage limits.
 
+BIP47 notification findings require one standard 80-byte OP_RETURN payload,
+a supported payment-code version and feature layout, and an exposed valid
+compressed secp256k1 designated public key. This public shape is a candidate,
+not recipient attribution or proof that the blinded payment code is valid;
+those checks require recipient-specific notification-key data.
+
 All browser assets are packaged locally; the application UI makes no CDN,
 analytics, telemetry, font, or other third-party browser requests.
+
+Exact-address reuse is compared across observed Tx0 inputs, coordinator fees,
+premix/feeder outputs, doxxic change, Whirlpool inputs and equal outputs, and
+Stonewall equal outputs. A finding requires the same native-SegWit address to
+occur at two or more distinct outpoints and in at least two classified roles;
+seeing the same UTXO later consumed as an input does not by itself count as
+reuse.
 
 ## Public example
 

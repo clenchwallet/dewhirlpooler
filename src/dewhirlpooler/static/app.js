@@ -393,6 +393,10 @@ function renderSummary(report) {
       ).toLocaleString(),
     ),
     addSummaryItem(
+      "BIP47 notification candidates",
+      Number(summary.bip47_notification_candidates || 0).toLocaleString(),
+    ),
+    addSummaryItem(
       "Possible payments",
       Number(summary.possible_payments || 0).toLocaleString(),
     ),
@@ -445,6 +449,7 @@ const FINDING_LABELS = {
   whirlpool_cpfp: "Possible Whirlpool CPFP",
   postmix_payjoin_fingerprint:
     "Possible Payjoin / Cahoots fingerprint leak",
+  bip47_notification: "Possible BIP47 notification",
   possible_payment: "Possible payment",
   unspent: "Still unspent",
 };
@@ -452,6 +457,9 @@ const FINDING_LABELS = {
 const REUSED_ROLE_LABELS = {
   coordinator_fee: "Coordinator fee",
   tx0_premix: "Tx0 premix",
+  tx0_input: "Tx0 input",
+  tx0_change: "Tx0 change",
+  whirlpool_input: "Whirlpool input",
   whirlpool_coinjoin_output: "Whirlpool output",
   stonewall_equal_output: "Stonewall equal output",
 };
@@ -553,6 +561,20 @@ function findingDetailLines(finding) {
     );
     lines.push(
       "Consistent with Payjoin/Cahoots, not proof; observable groups are not proven owners.",
+    );
+  }
+  if (finding.kind === "bip47_notification") {
+    if (Number.isInteger(finding.bip47_payload_version)) {
+      lines.push(`Payment-code payload version: ${finding.bip47_payload_version}`);
+    }
+    if (Number.isInteger(finding.bip47_designated_input_index)) {
+      lines.push(
+        `Designated input: ${finding.bip47_designated_input_index + 1}`,
+      );
+    }
+    lines.push(
+      "Recipient attribution and blinded-code validation require " +
+        "recipient-specific notification-key data.",
     );
   }
   return lines;

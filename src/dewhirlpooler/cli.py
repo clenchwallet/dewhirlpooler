@@ -559,6 +559,10 @@ def _print_trace(report: TraceReport) -> None:
         "Possible Payjoin / Cahoots fingerprint leak: "
         f"{summary.postmix_payjoin_fingerprint_candidates}"
     )
+    print(
+        "BIP47 notification candidates: "
+        f"{summary.bip47_notification_candidates}"
+    )
     print(f"Possible payments: {summary.possible_payments}")
     print(
         f"Unspent tracked funds: {summary.unspent_sats} sats across "
@@ -665,6 +669,24 @@ def _print_trace(report: TraceReport) -> None:
                 "This is consistent with Payjoin/Cahoots, not proof; "
                 "observable groups are not proven owners."
             )
+        elif finding.kind is TraceFindingKind.BIP47_NOTIFICATION:
+            print(
+                "Possible BIP47 notification: "
+                f"{finding.txid} ({finding.confidence.value} confidence)"
+            )
+            print(
+                "Payload version / designated input: "
+                f"{finding.bip47_payload_version or 'unavailable'} / "
+                + (
+                    str(finding.bip47_designated_input_index + 1)
+                    if finding.bip47_designated_input_index is not None
+                    else "unavailable"
+                )
+            )
+            print(
+                "Recipient and payment-code validity require "
+                "recipient-specific notification-key data."
+            )
         elif finding.kind is TraceFindingKind.ADDRESS_REUSE:
             roles = ", ".join(
                 _display_reused_role(role)
@@ -706,6 +728,9 @@ def _display_reused_role(role: str) -> str:
     return {
         "coordinator_fee": "coordinator fee",
         "tx0_premix": "Tx0 premix",
+        "tx0_input": "Tx0 input",
+        "tx0_change": "Tx0 change",
+        "whirlpool_input": "Whirlpool input",
         "whirlpool_coinjoin_output": "Whirlpool output",
         "stonewall_equal_output": "Stonewall equal output",
     }.get(role, role.replace("_", " "))

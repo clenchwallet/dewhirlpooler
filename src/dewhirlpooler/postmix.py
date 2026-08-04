@@ -92,6 +92,67 @@ class PayjoinFingerprintDetection:
     miner_fee_sats: int
 
 
+@dataclass(frozen=True, slots=True)
+class Bip47NotificationDetection:
+    """Public evidence for one canonical BIP47 notification candidate."""
+
+    confidence: Confidence
+    notification_outpoint: OutPoint
+    payload_version: int
+    designated_input_index: int
+    designated_input_outpoint: OutPoint
+    designated_pubkey: bytes
+
+
+def detect_bip47_notification(
+    transaction: Transaction,
+    prevouts: Mapping[OutPoint, TxOutput],
+) -> Bip47NotificationDetection | None:
+    """Detect the public, non-attributable shape of a BIP47 notification."""
+
+    input_outpoints = tuple(
+        transaction_input.previous_output
+        for transaction_input in transaction.inputs
+    )
+    if (
+        any(_is_coinbase(outpoint) for outpoint in input_outpoints)
+        or len(set(input_outpoints)) != len(input_outpoints)
+        or set(prevouts) != set(input_outpoints)
+    ):
+        return None
+
+    candidates = tuple(
+        output
+        for output in transaction.outputs
+        if _bip47_payload(output) is not None
+    )
+    if len(candidates) != 1:
+        return None
+    notification_output = candidates[0]
+    payload = _bip47_payload(notification_output)
+    if payload is None:
+        return None
+
+    for input_index, transaction_input in enumerate(transaction.inputs):
+        pubkey = _designated_pubkey(
+            transaction_input,
+            prevouts[transaction_input.previous_output],
+        )
+        if pubkey is not None:
+            return Bip47NotificationDetection(
+                confidence=Confidence.MEDIUM,
+                notification_outpoint=OutPoint(
+                    transaction.txid,
+                    notification_output.index,
+                ),
+                payload_version=payload[0],
+                designated_input_index=input_index,
+                designated_input_outpoint=transaction_input.previous_output,
+                designated_pubkey=pubkey,
+            )
+    return None
+
+
 def detect_payjoin_fingerprints(
     transaction: Transaction,
     prevouts: Mapping[OutPoint, TxOutput],
@@ -261,6 +322,116 @@ def detect_payjoin_fingerprints(
         input_value_sats=input_total,
         miner_fee_sats=miner_fee,
     )
+
+
+def _bip47_payload(output: TxOutput) -> bytes | None:
+    if (
+        output.value_sats != 0
+        or output.script_type is not ScriptType.OP_RETURN
+        or classify_script(output.script_pubkey) is not ScriptType.OP_RETURN
+        or len(output.script_pubkey) != 83
+        or output.script_pubkey[:3] != b"\x6a\x4c\x50"
+    ):
+        return None
+    payload = output.script_pubkey[3:]
+    if (
+        payload[0] not in {1, 2}
+        or payload[1] not in {0, 1}
+        or payload[2] not in {2, 3}
+    ):
+        return None
+    reserved_start = 69 if payload[1] == 1 else 67
+    if any(payload[reserved_start:]):
+        return None
+    return payload
+
+
+def _designated_pubkey(
+    transaction_input: TxInput,
+    prevout: TxOutput,
+) -> bytes | None:
+    script_sig_pushes = _script_pushes(transaction_input.script_sig)
+    pubkey = _first_compressed_pubkey(script_sig_pushes)
+    if pubkey is not None:
+        return pubkey
+
+    if prevout.script_type is ScriptType.P2SH and script_sig_pushes:
+        pubkey = _first_compressed_pubkey(
+            _script_pushes(script_sig_pushes[-1])
+        )
+        if pubkey is not None:
+            return pubkey
+
+    pubkey = _first_compressed_pubkey(transaction_input.witness)
+    if pubkey is not None:
+        return pubkey
+    if transaction_input.witness:
+        pubkey = _first_compressed_pubkey(
+            _script_pushes(transaction_input.witness[-1])
+        )
+        if pubkey is not None:
+            return pubkey
+
+    return _first_compressed_pubkey(
+        _script_pushes(prevout.script_pubkey)
+    )
+
+
+def _first_compressed_pubkey(items: Iterable[bytes]) -> bytes | None:
+    for item in items:
+        if _is_compressed_secp256k1_pubkey(item):
+            return item
+    return None
+
+
+def _is_compressed_secp256k1_pubkey(candidate: bytes) -> bool:
+    if len(candidate) != 33 or candidate[0] not in {2, 3}:
+        return False
+    field_prime = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+    x_coordinate = int.from_bytes(candidate[1:], "big")
+    if x_coordinate >= field_prime:
+        return False
+    y_squared = (pow(x_coordinate, 3, field_prime) + 7) % field_prime
+    return (
+        y_squared == 0
+        or pow(y_squared, (field_prime - 1) // 2, field_prime) == 1
+    )
+
+
+def _script_pushes(script: bytes) -> tuple[bytes, ...]:
+    pushes: list[bytes] = []
+    position = 0
+    while position < len(script):
+        opcode = script[position]
+        position += 1
+        if opcode == 0:
+            pushes.append(b"")
+            continue
+        if 1 <= opcode <= 75:
+            length = opcode
+        elif opcode == 0x4C:
+            if position >= len(script):
+                return ()
+            length = script[position]
+            position += 1
+        elif opcode == 0x4D:
+            if position + 2 > len(script):
+                return ()
+            length = int.from_bytes(script[position : position + 2], "little")
+            position += 2
+        elif opcode == 0x4E:
+            if position + 4 > len(script):
+                return ()
+            length = int.from_bytes(script[position : position + 4], "little")
+            position += 4
+        else:
+            continue
+        end = position + length
+        if end > len(script):
+            return ()
+        pushes.append(script[position:end])
+        position = end
+    return tuple(pushes)
 
 
 def detect_whirlpool_cpfp(

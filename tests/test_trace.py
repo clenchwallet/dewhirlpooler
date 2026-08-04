@@ -25,6 +25,9 @@ from dewhirlpooler.trace import (
 from dewhirlpooler.whirlpool import Confidence
 
 FIXTURES = Path(__file__).parent / "fixtures"
+SECP256K1_GENERATOR = bytes.fromhex(
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+)
 
 
 def _fixture(name: str) -> Transaction:
@@ -83,6 +86,76 @@ def test_unknown_root_returns_root_only_report() -> None:
     assert report.findings == ()
     assert report.warnings
     assert report.truncated is False
+
+
+def test_unknown_root_reports_bip47_notification_candidate() -> None:
+    input_outpoint = OutPoint("a" * 64, 0)
+    payload = (
+        b"\x01\x00\x02"
+        + b"\x11" * 32
+        + b"\x22" * 32
+        + b"\x00" * 13
+    )
+    transaction = Transaction(
+        version=2,
+        inputs=(
+            TxInput(
+                previous_output=input_outpoint,
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+                witness=(b"signature", SECP256K1_GENERATOR),
+            ),
+        ),
+        outputs=(
+            TxOutput(
+                0,
+                0,
+                b"\x6a\x4c\x50" + payload,
+                ScriptType.OP_RETURN,
+            ),
+            TxOutput(
+                1,
+                9_000,
+                b"\x00\x14" + b"\x33" * 20,
+                ScriptType.P2WPKH,
+            ),
+        ),
+        lock_time=0,
+        has_witness=True,
+        txid="b" * 64,
+        wtxid="c" * 64,
+        size=200,
+        weight=600,
+        vsize=150,
+    )
+    prevout = TxOutput(
+        0,
+        10_000,
+        b"\x00\x14" + b"\x44" * 20,
+        ScriptType.P2WPKH,
+    )
+    resolver = FakeResolver(
+        {transaction.txid: transaction},
+        {transaction.txid: {input_outpoint: prevout}},
+        {},
+    )
+
+    report = ExposureTracer(resolver).trace(transaction.txid)  # type: ignore[arg-type]
+
+    assert report.summary.bip47_notification_candidates == 1
+    assert len(report.findings) == 1
+    finding = report.findings[0]
+    assert finding.kind is TraceFindingKind.BIP47_NOTIFICATION
+    assert finding.outpoints == (OutPoint(transaction.txid, 0),)
+    assert finding.bip47_payload_version == 1
+    assert finding.bip47_designated_input_index == 0
+    assert finding.bip47_designated_input_outpoint == input_outpoint
+    assert finding.bip47_designated_pubkey == SECP256K1_GENERATOR.hex()
+    assert "not proof" in finding.explanation
+    assert report.to_dict()["summary"]["bip47_notification_candidates"] == 1
+    assert report.to_dict()["findings"][0][
+        "bip47_designated_input_outpoint"
+    ] == {"txid": input_outpoint.txid, "index": input_outpoint.index}
 
 
 def test_unresolved_round_ratios_are_unavailable_not_zero() -> None:
@@ -328,6 +401,93 @@ def test_flags_address_reuse_across_coinjoin_and_stonewall_roles() -> None:
     assert report.summary.address_reuse_findings == 1
 
 
+def test_flags_reuse_between_tx0_input_and_change() -> None:
+    shared_script = b"\x00\x14" + b"\x97" * 20
+    root = _replace_outputs(
+        _fixture("ashigaru-tx0-0.025.hex"),
+        {2: shared_script},
+    )
+    input_outpoint = root.inputs[0].previous_output
+    input_output = TxOutput(
+        index=input_outpoint.index,
+        value_sats=sum(output.value_sats for output in root.outputs) + 15_000,
+        script_pubkey=shared_script,
+        script_type=ScriptType.P2WPKH,
+    )
+    resolver = FakeResolver(
+        {root.txid: root},
+        {root.txid: {input_outpoint: input_output}},
+        {},
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    finding = next(
+        finding
+        for finding in report.findings
+        if finding.kind is TraceFindingKind.ADDRESS_REUSE
+    )
+    assert finding.reused_address == encode_p2wpkh_address(shared_script)
+    assert finding.reused_roles == ("tx0_change", "tx0_input")
+    assert finding.outpoints == tuple(
+        sorted(
+            (input_outpoint, OutPoint(root.txid, 2)),
+            key=lambda item: (item.txid, item.index),
+        )
+    )
+
+
+def test_flags_reuse_between_whirlpool_input_and_output() -> None:
+    shared_script = b"\x00\x14" + b"\x96" * 20
+    root = _replace_outputs(
+        _fixture("ashigaru-round-0.025.hex"),
+        {0: shared_script},
+    )
+    input_values = [2_500_605] * 2 + [2_500_000] * 3
+    prevouts = {
+        transaction_input.previous_output: TxOutput(
+            index=transaction_input.previous_output.index,
+            value_sats=value,
+            script_pubkey=(
+                shared_script
+                if position == 0
+                else b"\x00\x14" + bytes((position + 1,)) * 20
+            ),
+            script_type=ScriptType.P2WPKH,
+        )
+        for position, (transaction_input, value) in enumerate(
+            zip(root.inputs, input_values, strict=True)
+        )
+    }
+    resolver = FakeResolver(
+        {root.txid: root},
+        {root.txid: prevouts},
+        {},
+    )
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
+
+    finding = next(
+        finding
+        for finding in report.findings
+        if finding.kind is TraceFindingKind.ADDRESS_REUSE
+    )
+    assert finding.reused_address == encode_p2wpkh_address(shared_script)
+    assert finding.reused_roles == (
+        "whirlpool_coinjoin_output",
+        "whirlpool_input",
+    )
+    assert finding.outpoints == tuple(
+        sorted(
+            (
+                root.inputs[0].previous_output,
+                OutPoint(root.txid, 0),
+            ),
+            key=lambda item: (item.txid, item.index),
+        )
+    )
+
+
 def test_same_role_address_reuse_is_not_flagged() -> None:
     template = _fixture("ashigaru-tx0-0.025.hex")
     shared_script = b"\x00\x14" + b"\x99" * 20
@@ -345,6 +505,18 @@ def test_same_role_address_reuse_is_not_flagged() -> None:
     )
 
     report = ExposureTracer(resolver).trace(transaction.txid)  # type: ignore[arg-type]
+
+    assert report.summary.address_reuse_findings == 0
+    assert all(
+        finding.kind is not TraceFindingKind.ADDRESS_REUSE
+        for finding in report.findings
+    )
+
+
+def test_same_outpoint_becoming_whirlpool_input_is_not_reuse() -> None:
+    resolver, root, _, _, _ = _chain()
+
+    report = ExposureTracer(resolver).trace(root.txid)  # type: ignore[arg-type]
 
     assert report.summary.address_reuse_findings == 0
     assert all(
