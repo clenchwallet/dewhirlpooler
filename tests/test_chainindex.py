@@ -325,6 +325,19 @@ def test_settings_defaults_validation_and_immutable_database_start(
         ChainIndex(_settings(path, start_height=101))
 
 
+def test_settings_expand_home_portably(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    settings = ChainIndexSettings.from_env(
+        {"DEWHIRLPOOLER_CHAIN_DB": "~/chain.sqlite3"}
+    )
+
+    assert settings.path == tmp_path / "chain.sqlite3"
+
+
 @pytest.mark.parametrize("workers", ["1", "8", "16"])
 def test_settings_accept_bounded_prefetch_workers(
     tmp_path: Path,

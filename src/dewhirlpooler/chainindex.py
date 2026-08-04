@@ -15,6 +15,7 @@ from pathlib import Path
 from .bitcoin import OutPoint, ScriptType, Transaction, TxOutput
 from .blocksource import CoreBlock, CoreBlockError, CoreBlockSource
 from .core import CoreRpcError
+from .pathutils import expand_user_path
 from .whirlpool import (
     DEFAULT_POOLS,
     Confidence,
@@ -106,7 +107,7 @@ class ChainIndexSettings:
             )
         )
         return cls(
-            path=Path(path_text).expanduser(),
+            path=expand_user_path(path_text),
             start_height=start_height,
             busy_timeout_ms=busy_timeout_ms,
             prefetch_workers=prefetch_workers,
